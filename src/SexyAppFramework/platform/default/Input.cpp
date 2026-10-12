@@ -766,6 +766,16 @@ bool SexyAppBase::ProcessDeferredMessages(bool singleMessage)
 					break;
 				}
 
+				// The key under Esc (matched by physical position, so input methods and keyboard
+				// layouts that remap it still work) or F1 opens and closes the built-in trainer panel
+				if (event.key.repeat == 0 &&
+					(event.key.keysym.scancode == SDL_SCANCODE_GRAVE || event.key.keysym.scancode == SDL_SCANCODE_NONUSBACKSLASH ||
+					 event.key.keysym.scancode == SDL_SCANCODE_F1) &&
+					TrainerHotkey())
+				{
+					break;
+				}
+
 				mWidgetManager->KeyDown(SDLKeyToKeyCode(event.key.keysym.sym));
 
 				char aSynthesizedChar = 0;

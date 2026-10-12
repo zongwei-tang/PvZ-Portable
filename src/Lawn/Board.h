@@ -275,6 +275,7 @@ public:
 	Zombie*				AddZombie(ZombieType theZombieType, int theFromWave);
 	void							SpawnZombieWave();
 	void							RemoveAllZombies();
+	void							CheatCompleteLevel();
 	void							RemoveCutsceneZombies();
 	void							SpawnZombiesFromGraves();
 	PlantingReason					CanPlantAt(int theGridX, int theGridY, SeedType theSeedType);

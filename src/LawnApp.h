@@ -45,6 +45,7 @@ class ProfileMgr;
 class PlayerInfo;
 class Music;
 class TitleScreen;
+class TrainerPanel;
 class ChallengeScreen;
 class StoreScreen;
 class AlmanacDialog;
@@ -96,6 +97,7 @@ public:
 	bool							mEasyPlantingCheat;
 	std::unique_ptr<PoolEffect>		mPoolEffect;
 	std::unique_ptr<ZenGarden>		mZenGarden;
+	std::unique_ptr<TrainerPanel>	mTrainerPanel;
 	std::unique_ptr<EffectSystem>	mEffectSystem;
 	std::unique_ptr<ReanimatorCache>	mReanimatorCache;
 	std::unique_ptr<ProfileMgr>		mProfileMgr;
@@ -154,6 +156,8 @@ public:
 	void							URLOpenSucceeded(const std::string& theURL) override;
 	bool							OpenURL(const std::string& theURL, bool shutdownOnOpen) override;
 	bool							DebugKeyDown(int theKey) override;
+	bool							TrainerHotkey() override;
+	void							EnsureTrainerPanel();
 	void							HandleCmdLineParam(std::string_view theParamName, std::string_view theParamValue) override;
 	void							ConfirmQuit();
 	void							ConfirmCheckForUpdates() { ; }

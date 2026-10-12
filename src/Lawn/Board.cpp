@@ -55,6 +55,7 @@
 //#define SEXY_PERF_ENABLED
 #include "misc/PerfTimer.h"
 #include "Widget/AchievementsScreen.h"
+#include "System/Trainer.h"
 
 constexpr const int ZOMBIE_COUNTDOWN_FIRST_WAVE = 1800;
 constexpr const int ZOMBIE_COUNTDOWN = 2500;
@@ -336,6 +337,7 @@ void Board::TryToSaveGame()
 bool Board::NeedSaveGame()
 {
 	return
+		!gTrainer.mSandbox &&
 		mApp->mGameMode != GameMode::GAMEMODE_CHALLENGE_ICE &&
 		mApp->mGameMode != GameMode::GAMEMODE_UPSELL &&
 		mApp->mGameMode != GameMode::GAMEMODE_INTRO &&
@@ -1630,6 +1632,7 @@ void Board::StartLevel()
 	mCoinBankFadeCount = 0;
 	mApp->mLastLevelStats->Reset();
 	mChallenge->StartLevel();
+	TrainerApplyPendingLayout(this);
 
 	// the unsigned underflow below is intentional
 	unsigned int aSurvivalStage = mApp->mGameMode - GAMEMODE_SURVIVAL_ENDLESS_STAGE_1;
@@ -2711,6 +2714,11 @@ PlantingReason Board::CanPlantAt(int theGridX, int theGridY, SeedType theSeedTyp
 			return PlantingReason::PLANTING_NOT_ON_WATER;
 		}
 
+		return PlantingReason::PLANTING_OK;
+	}
+
+	if (gTrainer.mPlantAnywhere)
+	{
 		return PlantingReason::PLANTING_OK;
 	}
 
@@ -4364,6 +4372,18 @@ void Board::MouseDown(int x, int y, int theClickCount)
 {
 	UpdateMousePosition();
 	Widget::MouseDown(x, y, theClickCount);
+
+	// trainer level maker: left click places the chosen plant or zombie, right click stops
+	if (gTrainer.mBrush != TRAINER_BRUSH_NONE && mApp->mGameScene == GameScenes::SCENE_PLAYING)
+	{
+		if (theClickCount < 0)
+		{
+			gTrainer.mBrush = TRAINER_BRUSH_NONE;
+			return;
+		}
+		if (TrainerBrushClick(this, x, y))
+			return;
+	}
 	mIgnoreMouseUp = !CanInteractWithBoardButtons();
 	if (mTimeStopCounter > 0)
 		return;
@@ -4952,16 +4972,23 @@ void Board::SpawnZombieWave()
 
 void Board::UpdateGameObjects()
 {
+	if (gTrainer.mInfiniteSun && mSunMoney < 9990)
+		mSunMoney = 9990;
+
 	for (Plant* aPlant : mPlants)
 	{
 		if (aPlant->mDead)
 			continue;
+		if (gTrainer.mInvinciblePlants && aPlant->mPlantHealth < aPlant->mPlantMaxHealth)
+			aPlant->mPlantHealth = aPlant->mPlantMaxHealth;
 		aPlant->Update();
 	}
 
 	for (Zombie* aZombie : mZombies)
 	{
 		if (aZombie->mDead)
+			continue;
+		if (gTrainer.mFreezeZombies && !aZombie->IsDeadOrDying())
 			continue;
 		aZombie->Update();
 	}
@@ -4977,6 +5004,11 @@ void Board::UpdateGameObjects()
 	{
 		if (aCoin->mDead)
 			continue;
+		if (gTrainer.mAutoCollect && !aCoin->mIsBeingCollected && mApp->mGameScene == GameScenes::SCENE_PLAYING && (aCoin->IsSun() || aCoin->IsMoney()))
+		{
+			aCoin->PlayCollectSound();
+			aCoin->Collect();
+		}
 		aCoin->Update();
 	}
 
@@ -5235,6 +5267,9 @@ void Board::NextWaveComing()
 void Board::UpdateZombieSpawning()
 {
 	if (mApp->mGameMode == GameMode::GAMEMODE_UPSELL || mApp->mGameMode == GameMode::GAMEMODE_INTRO)
+		return;
+
+	if (gTrainer.mStopZombieWaves)
 		return;
 
 	if (mFinalWaveSoundCounter > 0)
@@ -7669,6 +7704,52 @@ static void PvzpCrash()
 	PVZP_ASSERT(false, "Crash{}", "!!!!");
 }
 
+void Board::CheatCompleteLevel()
+{
+	mApp->mBoardResult = BoardResult::BOARDRESULT_CHEAT;
+	if (IsLastStandStageWithRepick())
+	{
+		if (mNextSurvivalStageCounter == 0)
+		{
+			mCurrentWave = mNumWaves;
+			RemoveAllZombies();
+			FadeOutLevel();
+		}
+	}
+	else if ((mApp->IsScaryPotterLevel() && !IsFinalScaryPotterStage()) || mApp->IsEndlessIZombie(mApp->mGameMode))
+	{
+		if (mNextSurvivalStageCounter == 0)
+		{
+			RemoveAllZombies();
+			FadeOutLevel();
+		}
+	}
+	else if (mApp->IsSurvivalEndless(mApp->mGameMode))
+	{
+		if (mApp->mGameScene == GameScenes::SCENE_LEVEL_INTRO)
+		{
+			return;
+		}
+
+		mCurrentWave = mNumWaves;
+		RemoveAllZombies();
+		FadeOutLevel();
+	}
+	else if (mApp->IsSurvivalMode())
+	{
+		mChallenge->mSurvivalStage = 5;
+		RemoveAllZombies();
+		FadeOutLevel();
+		mBoardFadeOutCounter = 200;
+	}
+	else
+	{
+		RemoveAllZombies();
+		FadeOutLevel();
+		mBoardFadeOutCounter = 200;
+	}
+}
+
 void Board::KeyChar(char theChar)
 {
 	if (!mApp->mDebugKeysEnabled)
@@ -7954,48 +8035,7 @@ void Board::KeyChar(char theChar)
 	}
 	else if (theChar == '+')
 	{
-		mApp->mBoardResult = BoardResult::BOARDRESULT_CHEAT;
-		if (IsLastStandStageWithRepick())
-		{
-			if (mNextSurvivalStageCounter == 0)
-			{
-				mCurrentWave = mNumWaves;
-				RemoveAllZombies();
-				FadeOutLevel();
-			}
-		}
-		else if ((mApp->IsScaryPotterLevel() && !IsFinalScaryPotterStage()) || mApp->IsEndlessIZombie(mApp->mGameMode))
-		{
-			if (mNextSurvivalStageCounter == 0)
-			{
-				RemoveAllZombies();
-				FadeOutLevel();
-			}
-		}
-		else if (mApp->IsSurvivalEndless(mApp->mGameMode))
-		{
-			if (mApp->mGameScene == GameScenes::SCENE_LEVEL_INTRO)
-			{
-				return;
-			}
-
-			mCurrentWave = mNumWaves;
-			RemoveAllZombies();
-			FadeOutLevel();
-		}
-		else if (mApp->IsSurvivalMode())
-		{
-			mChallenge->mSurvivalStage = 5;
-			RemoveAllZombies();
-			FadeOutLevel();
-			mBoardFadeOutCounter = 200;
-		}
-		else
-		{
-			RemoveAllZombies();
-			FadeOutLevel();
-			mBoardFadeOutCounter = 200;
-		}
+		CheatCompleteLevel();
 	}
 	else if (theChar == '8')
 	{
@@ -8470,6 +8510,9 @@ int Board::CountCoinsBeingCollected()
 
 bool Board::TakeSunMoney(int theAmount)
 {
+	if (gTrainer.mFreePlanting)
+		return true;
+
 	if (CanTakeSunMoney(theAmount))
 	{
 		mSunMoney -= theAmount;
@@ -8483,6 +8526,9 @@ bool Board::TakeSunMoney(int theAmount)
 
 bool Board::CanTakeSunMoney(int theAmount)
 {
+	if (gTrainer.mFreePlanting)
+		return true;
+
 	return theAmount <= mSunMoney + CountSunBeingCollected();
 }
 
@@ -8616,7 +8662,7 @@ int Board::GetNumSeedsInBank()
 		return 9;
 	}
 
-	int aNumSeeds = mApp->mPlayerInfo->mPurchases[StoreItem::STORE_ITEM_PACKET_UPGRADE] + 6;
+	int aNumSeeds = gTrainer.mTenSeedSlots ? 10 : mApp->mPlayerInfo->mPurchases[StoreItem::STORE_ITEM_PACKET_UPGRADE] + 6;
 	int aSeedsAvailable = mApp->GetSeedsAvailable();
 	return std::min(aNumSeeds, aSeedsAvailable);
 }

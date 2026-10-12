@@ -31,6 +31,7 @@
 #include "graphics/Font.h"
 #include "../PvzpLib/FilterEffect.h"
 #include "misc/SexyMatrix.h"
+#include "System/Trainer.h"
 
 constexpr const int SLOT_MACHINE_TIME = 400;
 constexpr const int CONVEYOR_SPEED = 4;
@@ -171,6 +172,8 @@ void SeedPacket::Update()
 
 	if (!mActive && mRefreshing)
 	{
+		if (gTrainer.mNoCooldown)
+			mRefreshCounter = mRefreshTime;
 		mRefreshCounter++;
 		if (mRefreshCounter > mRefreshTime)
 		{

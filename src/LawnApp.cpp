@@ -73,6 +73,8 @@
 #include "widget/Checkbox.h"
 #include "widget/Dialog.h"
 #include "SexyAppFramework/resource.h"
+#include "Lawn/Widget/TrainerPanel.h"
+#include "Lawn/System/Trainer.h"
 
 bool gIsPartnerBuild = false;
 bool gSlowMo = false;
@@ -170,6 +172,12 @@ LawnApp::LawnApp()
 
 LawnApp::~LawnApp()
 {
+	if (mTrainerPanel)
+	{
+		mWidgetManager->RemoveWidget(mTrainerPanel.get());
+		mTrainerPanel.reset();
+	}
+
 	while (!mDialogMap.empty())
 	{
 		KillDialog(mDialogMap.begin()->first);
@@ -255,7 +263,7 @@ void LawnApp::KillBoard()
 	KillSeedChooserScreen();
 	if (mBoard)
 	{
-		if (mPlayerInfo && (
+		if (mPlayerInfo && !gTrainer.mSandbox && (
 			mBoardResult == BoardResult::BOARDRESULT_WON ||
 			mBoardResult == BoardResult::BOARDRESULT_LOST ||
 			mBoardResult == BoardResult::BOARDRESULT_RESTART ||
@@ -343,6 +351,12 @@ void LawnApp::PreNewGame(GameMode theGameMode, bool theLookForSavedGame)
 	//}
 
 	mGameMode = theGameMode;
+	if (gTrainer.mSandbox)
+	{
+		// restarting a trainer blank level must not erase the real survival save
+		NewGame();
+		return;
+	}
 	if (theLookForSavedGame && TryLoadGame())
 		return;
 
@@ -437,6 +451,7 @@ void LawnApp::NewGame()
 void LawnApp::ShowGameSelector()
 {
 	KillBoard();
+	TrainerLeaveSandbox();
 	//UpdateRegisterInfo();
 	if (mGameSelector)
 	{
@@ -505,6 +520,7 @@ void LawnApp::KillCreditScreen()
 
 void LawnApp::ShowChallengeScreen(ChallengePage thePage)
 {
+	TrainerLeaveSandbox();
 	mGameScene = GameScenes::SCENE_CHALLENGE;
 	mChallengeScreen = std::make_unique<ChallengeScreen>(this, thePage);
 	mChallengeScreen->Resize(0, 0, mWidth, mHeight);
@@ -1082,6 +1098,9 @@ bool LawnApp::KillAlmanacDialog()
 
 bool LawnApp::NeedPauseGame()
 {
+	if (mTrainerPanel && mTrainerPanel->mOpen)
+		return true;
+
 	if (mDialogList.size() == 0)
 		return false;
 
@@ -1271,6 +1290,26 @@ void LawnApp::Start()
 	SexyAppBase::Start();
 }
 
+void LawnApp::EnsureTrainerPanel()
+{
+	if (mTrainerPanel || mWidgetManager == nullptr)
+		return;
+
+	mTrainerPanel = std::make_unique<TrainerPanel>(this);
+	mWidgetManager->AddWidget(mTrainerPanel.get());
+	mTrainerPanel->UpdateClosedState();
+}
+
+bool LawnApp::TrainerHotkey()
+{
+	if (!mLoadingThreadCompleted || mWidgetManager == nullptr)
+		return false;
+
+	EnsureTrainerPanel();
+	mTrainerPanel->Toggle();
+	return true;
+}
+
 bool LawnApp::DebugKeyDown(int theKey)
 {
 	return SexyAppBase::DebugKeyDown(theKey);
@@ -1294,6 +1333,9 @@ void LawnApp::HandleCmdLineParam(std::string_view theParamName, std::string_view
 bool LawnApp::UpdatePlayerProfileForFinishingLevel()
 {
 	bool aUnlockedNewChallenge = false;
+
+	if (gTrainer.mSandbox)
+		return aUnlockedNewChallenge; // trainer blank levels never count toward progress
 
 	if (IsAdventureMode())
 	{
@@ -1576,6 +1618,10 @@ void LawnApp::UpdateFrames()
 	{
 		aUpdateCount = 20;
 	}
+	else
+	{
+		aUpdateCount = gTrainer.mGameSpeed;
+	}
 
 	for (int i = 0; i < aUpdateCount; i++)
 	{
@@ -1731,6 +1777,7 @@ void LawnApp::LoadingCompleted()
 	mResourceManager->DeleteImage("IMAGE_TITLESCREEN");
 
 	ShowGameSelector();
+	EnsureTrainerPanel();
 }
 
 void LawnApp::URLOpenFailed(const std::string& theURL)
@@ -2270,6 +2317,9 @@ bool LawnApp::HasSeedType(SeedType theSeedType)
 {
 	if (IsTrialStageLocked() && theSeedType >= SeedType::SEED_JALAPENO)
 		return false;
+
+	if (gTrainer.mAllPlants)
+		return true;
 
 	/*  optimization
 	if (theSeedType >= SeedType::SEED_GATLINGPEA && theSeedType <= SeedType::SEED_IMITATER)
