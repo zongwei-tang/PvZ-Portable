@@ -122,7 +122,7 @@ ChallengeScreen::ChallengeScreen(LawnApp* theApp, ChallengePage thePage)
 	mUnlockState = UNLOCK_OFF;
 	mUnlockChallengeIndex = -1;
 	mUnlockStateCounter = 0;
-	mLimboPageUnlocked = false;
+	mLimboPageUnlocked = true; // local build: always show the Limbo Page button
 	mClickCount = 0;
 	mLastClickUpdateCnt = 0;
 	mLoadedResourceNames.push_back("DelayLoad_ChallengeScreen");
@@ -367,7 +367,8 @@ void ChallengeScreen::UpdateButtons()
 	{
 		ButtonWidget* aPageButton = mPageButton[aPage].get();
 
-		if (mLimboPageUnlocked && aPage == CHALLENGE_PAGE_LIMBO)
+		// local build: once unlocked, show every page button so all four pages stay reachable
+		if (mLimboPageUnlocked)
 			aPageButton->mVisible = true;
 
 		if (aPage == mPageIndex)
