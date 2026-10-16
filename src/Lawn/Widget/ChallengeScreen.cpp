@@ -655,6 +655,11 @@ void ChallengeScreen::ButtonDepress(int theId)
 	int aChallengeMode = theId - ChallengeScreen::ChallengeScreen_Mode;
 	if (aChallengeMode >= 0 && aChallengeMode < NUM_CHALLENGE_MODES)
 	{
+		if (LawnApp::IsSurvivalEndless((GameMode)(aChallengeMode + 1)))
+		{
+			mApp->DoEndlessSaveSlotDialog((GameMode)(aChallengeMode + 1));
+			return;
+		}
 		mApp->KillChallengeScreen();
 		mApp->PreNewGame((GameMode)(aChallengeMode + 1), true);
 	}

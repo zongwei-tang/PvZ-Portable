@@ -316,7 +316,8 @@ int Board::CountUntriggerLawnMowers()
 
 void Board::TryToSaveGame()
 {
-	std::string aFileName = GetSavedGameName(mApp->mGameMode, mApp->mPlayerInfo->mId);
+	int aSlot = mApp->GetSaveSlot();
+	std::string aFileName = GetSavedGameName(mApp->mGameMode, mApp->mPlayerInfo->mId, aSlot);
 
 	if (NeedSaveGame())
 	{
@@ -328,7 +329,11 @@ void Board::TryToSaveGame()
 
 		MkDir(GetAppDataPath("userdata"));
 		mApp->mMusic->GameMusicPause(true);
-		LawnSaveGame(this, aFileName);
+		if (LawnSaveGame(this, aFileName) && mApp->IsSurvivalEndless(mApp->mGameMode))
+		{
+			std::string anInfo = std::format("flags={}\n", GetSurvivalFlagsCompleted());
+			mApp->WriteBytesToFile(GetSavedGameInfoName(mApp->mGameMode, mApp->mPlayerInfo->mId, aSlot), anInfo.data(), anInfo.size());
+		}
 		mApp->ClearUpdateBacklog();
 		SurvivalSaveScore();
 	}

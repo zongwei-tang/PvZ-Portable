@@ -26,6 +26,7 @@
 #include <algorithm>
 #include "PlayerInfo.h"
 #include "../LawnCommon.h"
+#include "../../LawnApp.h"
 #include "../Widget/ChallengeScreen.h"
 #include "../../PvzpLib/PvzpDebug.h"
 #include "../../PvzpLib/PvzpCommon.h"
@@ -258,6 +259,14 @@ void PlayerInfo::DeleteUserFiles()
 		gSexyAppBase->EraseFile(aFileName);
 		std::string aLegacyFileName = GetLegacySavedGameName((GameMode)i, mId);
 		gSexyAppBase->EraseFile(aLegacyFileName);
+		if (LawnApp::IsSurvivalEndless((GameMode)i))
+		{
+			for (int aSlot = 0; aSlot < NUM_ENDLESS_SAVE_SLOTS; aSlot++)
+			{
+				gSexyAppBase->EraseFile(GetSavedGameName((GameMode)i, mId, aSlot));
+				gSexyAppBase->EraseFile(GetSavedGameInfoName((GameMode)i, mId, aSlot));
+			}
+		}
 	}
 }
 

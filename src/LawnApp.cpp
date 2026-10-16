@@ -61,6 +61,7 @@
 #include "Lawn/Widget/AlmanacDialog.h"
 #include "Lawn/Widget/NewUserDialog.h"
 #include "Lawn/Widget/ContinueDialog.h"
+#include "Lawn/Widget/EndlessSaveSlotDialog.h"
 #include "Lawn/System/ReanimationLawn.h"
 #include "Lawn/Widget/ChallengeScreen.h"
 #include "Lawn/Widget/NewOptionsDialog.h"
@@ -152,6 +153,7 @@ LawnApp::LawnApp()
 	mFirstTimeGameSelector = true;
 	mGameMode = GameMode::GAMEMODE_ADVENTURE;
 	mEasyPlantingCheat = false;
+	mEndlessSaveSlot = 0;
 	mAutoEnable3D = true;
 	Pvzp_SWTri_AddAllDrawTriFuncs();
 	mLoadingZombiesThreadCompleted = true;
@@ -269,10 +271,7 @@ void LawnApp::KillBoard()
 			mBoardResult == BoardResult::BOARDRESULT_RESTART ||
 			mBoardResult == BoardResult::BOARDRESULT_CHEAT))
 		{
-			std::string aFileName = GetSavedGameName(mGameMode, mPlayerInfo->mId);
-			EraseFile(aFileName);
-			std::string aLegacyFileName = GetLegacySavedGameName(mGameMode, mPlayerInfo->mId);
-			EraseFile(aLegacyFileName);
+			EraseSavedGame();
 		}
 
 		mBoard->DisposeBoard();
@@ -360,11 +359,23 @@ void LawnApp::PreNewGame(GameMode theGameMode, bool theLookForSavedGame)
 	if (theLookForSavedGame && TryLoadGame())
 		return;
 
-	std::string aFileName = GetSavedGameName(mGameMode, mPlayerInfo->mId);
-	EraseFile(aFileName);
-	std::string aLegacyFileName = GetLegacySavedGameName(mGameMode, mPlayerInfo->mId);
-	EraseFile(aLegacyFileName);
+	EraseSavedGame();
 	NewGame();
+}
+
+int LawnApp::GetSaveSlot()
+{
+	return IsSurvivalEndless(mGameMode) ? std::clamp(mEndlessSaveSlot, 0, NUM_ENDLESS_SAVE_SLOTS - 1) : 0;
+}
+
+void LawnApp::EraseSavedGame()
+{
+	int aSlot = GetSaveSlot();
+	EraseFile(GetSavedGameName(mGameMode, mPlayerInfo->mId, aSlot));
+	if (aSlot == 0)
+		EraseFile(GetLegacySavedGameName(mGameMode, mPlayerInfo->mId));
+	if (IsSurvivalEndless(mGameMode))
+		EraseFile(GetSavedGameInfoName(mGameMode, mPlayerInfo->mId, aSlot));
 }
 
 void LawnApp::MakeNewBoard()
@@ -395,7 +406,8 @@ bool LawnApp::SaveFileExists()
 
 bool LawnApp::TryLoadGame()
 {
-	std::string aSaveName = GetSavedGameName(mGameMode, mPlayerInfo->mId);
+	int aSlot = GetSaveSlot();
+	std::string aSaveName = GetSavedGameName(mGameMode, mPlayerInfo->mId, aSlot);
 	std::string aLegacySaveName = GetLegacySavedGameName(mGameMode, mPlayerInfo->mId);
 	mMusic->StopAllMusic();
 
@@ -413,7 +425,7 @@ bool LawnApp::TryLoadGame()
 
 		KillBoard();
 	}
-	if (this->FileExists(aLegacySaveName))
+	if (aSlot == 0 && this->FileExists(aLegacySaveName))
 	{
 		MakeNewBoard();
 		if (mBoard->LoadGame(aLegacySaveName))
@@ -665,6 +677,14 @@ AlmanacDialog* LawnApp::DoAlmanacDialog(SeedType theSeedType, ZombieType theZomb
 	PvzpLogLn("almanac load time: {} ms", aDuration);
 
 	return aDialog;
+}
+
+void LawnApp::DoEndlessSaveSlotDialog(GameMode theGameMode)
+{
+	EndlessSaveSlotDialog* aDialog = new EndlessSaveSlotDialog(this, theGameMode);
+	CenterDialog(aDialog, aDialog->mWidth, aDialog->mHeight);
+	AddDialog(Dialogs::DIALOG_ENDLESS_SAVE_SLOT, aDialog);
+	mWidgetManager->SetFocus(aDialog);
 }
 
 void LawnApp::DoContinueDialog()
@@ -1295,6 +1315,8 @@ void LawnApp::EnsureTrainerPanel()
 	if (mTrainerPanel || mWidgetManager == nullptr)
 		return;
 
+	// Read the saved switches before the panel exists, so it can never save defaults over them
+	TrainerLoadSettings();
 	mTrainerPanel = std::make_unique<TrainerPanel>(this);
 	mWidgetManager->AddWidget(mTrainerPanel.get());
 	mTrainerPanel->UpdateClosedState();

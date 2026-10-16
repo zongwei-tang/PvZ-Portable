@@ -20,7 +20,7 @@ enum TrainerBrush
 };
 
 // Runtime switches of the built-in trainer panel (see Widget/TrainerPanel).
-// They are not saved: every launch starts with all of them off.
+// The switches and the game speed are kept in trainer.ini, so they carry over to the next launch.
 struct TrainerSettings
 {
 	bool	mInfiniteSun = false;
@@ -38,6 +38,7 @@ struct TrainerSettings
 	// Level maker: a blank level is a survival stage with waves held back that never touches
 	// the player's real survival save or records.
 	bool	mSandbox = false;
+	bool	mStopZombieWavesOutsideSandbox = false;	// the player's own Stop Zombie Waves while a blank level forces it on
 	int		mBrush = TRAINER_BRUSH_NONE;	// what a left click on the lawn places
 	int		mBrushType = 0;					// SeedType or ZombieType of the brush
 
@@ -50,6 +51,7 @@ struct TrainerSettings
 
 extern TrainerSettings gTrainer;
 
+constexpr int TRAINER_GAME_SPEEDS[] = { 1, 2, 3, 5, 10 };
 constexpr int TRAINER_NUM_STAGES = 5;	// day, night, pool, fog, roof
 constexpr int TRAINER_NUM_SLOTS = 5;
 
@@ -58,6 +60,9 @@ bool			TrainerPlacePlant(Board* theBoard, int theSeedType, int theCol, int theRo
 bool			TrainerPlaceZombie(Board* theBoard, int theZombieType, int theRow, float thePosX);	// thePosX < 0: right edge
 bool			TrainerBrushClick(Board* theBoard, int x, int y);
 std::string		TrainerBrushName();
+std::string		TrainerZombieName(int theZombieType);
+void			TrainerLoadSettings();
+void			TrainerSaveSettings();
 int				TrainerClearLawn(Board* theBoard);
 bool			TrainerCanStartLevel(LawnApp* theApp);
 void			TrainerStartBlankLevel(LawnApp* theApp, int theStage);

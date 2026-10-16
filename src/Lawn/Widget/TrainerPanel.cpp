@@ -29,7 +29,6 @@ namespace
 constexpr int ROW_HEIGHT = 30;
 constexpr int ITEM_HEIGHT = 26;
 constexpr int ARROW_WIDTH = 24;
-constexpr int GAME_SPEEDS[] = { 1, 2, 3, 5, 10 };
 constexpr int MAX_COINS = 99999; // PlayerInfo::AddCoins clamps to this as well
 
 int Wrap(int theValue, int theCount)
@@ -158,9 +157,9 @@ void TrainerPanel::BuildItems()
 		[]() { return std::format("Game Speed  {}x", gTrainer.mGameSpeed); },
 		[](int theDir)
 		{
-			constexpr int aCount = static_cast<int>(std::size(GAME_SPEEDS));
-			int anIndex = static_cast<int>(std::find(std::begin(GAME_SPEEDS), std::end(GAME_SPEEDS), gTrainer.mGameSpeed) - std::begin(GAME_SPEEDS));
-			gTrainer.mGameSpeed = GAME_SPEEDS[Wrap(anIndex + theDir, aCount)];
+			constexpr int aCount = static_cast<int>(std::size(TRAINER_GAME_SPEEDS));
+			int anIndex = static_cast<int>(std::find(std::begin(TRAINER_GAME_SPEEDS), std::end(TRAINER_GAME_SPEEDS), gTrainer.mGameSpeed) - std::begin(TRAINER_GAME_SPEEDS));
+			gTrainer.mGameSpeed = TRAINER_GAME_SPEEDS[Wrap(anIndex + theDir, aCount)];
 		});
 	aY += ROW_HEIGHT;
 	AddButton(420, aY, 340, "Clear Lawn", [this]() { DoClearLawn(); });
@@ -195,8 +194,10 @@ void TrainerPanel::BuildItems()
 	AddSelector(40, aY, 260,
 		[this]()
 		{
-			const ZombieDefinition& aDef = GetZombieDefinition(static_cast<ZombieType>(mZombieTypes[mZombieIndex]));
-			return std::string(PvzpStringTranslate(std::format("[{}]", aDef.mZombieName)));
+			// the position shows every click registers; dropped when it would run over the arrows
+			std::string aName = TrainerZombieName(mZombieTypes[mZombieIndex]);
+			std::string aLabel = std::format("{} {}/{}", aName, mZombieIndex + 1, mZombieTypes.size());
+			return Sexy::FONT_DWARVENTODCRAFT15->StringWidth(aLabel) <= 260 - ARROW_WIDTH * 2 - 12 ? aLabel : aName;
 		},
 		[this](int theDir) { mZombieIndex = Wrap(mZombieIndex + theDir, static_cast<int>(mZombieTypes.size())); });
 	AddSelector(310, aY, 110,
@@ -332,6 +333,7 @@ void TrainerPanel::MouseDown(int x, int y, int theBtnNum, int /*theClickCount*/)
 
 	mApp->PlaySample(Sexy::SOUND_TAP);
 	mItems[anIndex].mAction();
+	TrainerSaveSettings();
 	MarkDirty();
 }
 

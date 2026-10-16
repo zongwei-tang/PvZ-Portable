@@ -71,7 +71,10 @@ std::unique_ptr<LawnEditWidget>	CreateEditWidget(int theId, EditListener* theLis
 void						DrawEditBox(Graphics* g, EditWidget* theWidget);
 
 // Miscellaneous
-std::string					GetSavedGameName(GameMode theGameMode, int theProfileId);
+// Endless survival has several save slots; slot 0 keeps the original file name so older saves show up as slot 1
+constexpr int				NUM_ENDLESS_SAVE_SLOTS = 5;
+std::string					GetSavedGameName(GameMode theGameMode, int theProfileId, int theSlot = 0);
+std::string					GetSavedGameInfoName(GameMode theGameMode, int theProfileId, int theSlot);
 std::string					GetLegacySavedGameName(GameMode theGameMode, int theProfileId);
 int							GetCurrentDaysSince2000(time_t theTime);
 

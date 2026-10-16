@@ -14,6 +14,7 @@
 #include "../../Resources.h"
 #include "../../PvzpLib/PvzpFoley.h"
 #include "../../PvzpLib/PvzpStringFile.h"
+#include <algorithm>
 #include <format>
 #include <fstream>
 #include <sstream>
@@ -58,6 +59,30 @@ constexpr GameMode STAGE_MODES[TRAINER_NUM_STAGES] = {
 };
 constexpr const char* STAGE_NAMES[TRAINER_NUM_STAGES] = { "Day", "Night", "Pool", "Fog", "Roof" };
 constexpr const char* LAYOUT_HEADER = "PVZ-PORTABLE-TRAINER-LEVEL 1";
+
+struct SettingsSwitch
+{
+	const char*	mKey;
+	bool		TrainerSettings::*mValue;
+};
+
+// mStopZombieWaves is written separately because a blank level forces it on
+constexpr SettingsSwitch SETTINGS_SWITCHES[] = {
+	{ "infinite_sun", &TrainerSettings::mInfiniteSun },
+	{ "no_cooldown", &TrainerSettings::mNoCooldown },
+	{ "free_planting", &TrainerSettings::mFreePlanting },
+	{ "plant_anywhere", &TrainerSettings::mPlantAnywhere },
+	{ "invincible_plants", &TrainerSettings::mInvinciblePlants },
+	{ "freeze_zombies", &TrainerSettings::mFreezeZombies },
+	{ "auto_collect", &TrainerSettings::mAutoCollect },
+	{ "all_plants", &TrainerSettings::mAllPlants },
+	{ "ten_seed_slots", &TrainerSettings::mTenSeedSlots },
+};
+
+std::string SettingsPath()
+{
+	return Sexy::GetAppDataPath("trainer.ini");
+}
 
 std::string SlotPath(int theSlot)
 {
@@ -164,11 +189,77 @@ std::string TrainerBrushName()
 	if (gTrainer.mBrush == TRAINER_BRUSH_PLANT)
 		return Plant::GetNameString(static_cast<SeedType>(gTrainer.mBrushType));
 	if (gTrainer.mBrush == TRAINER_BRUSH_ZOMBIE)
-	{
-		const ZombieDefinition& aDef = GetZombieDefinition(static_cast<ZombieType>(gTrainer.mBrushType));
-		return std::string(PvzpStringTranslate(std::format("[{}]", aDef.mZombieName)));
-	}
+		return TrainerZombieName(gTrainer.mBrushType);
 	return std::string();
+}
+
+std::string TrainerZombieName(int theZombieType)
+{
+	// The Zombotany zombies share the plain "ZOMBIE" name, which made them look like one entry
+	switch (theZombieType)
+	{
+	case ZombieType::ZOMBIE_PEA_HEAD:		return "Peashooter Zombie";
+	case ZombieType::ZOMBIE_WALLNUT_HEAD:	return "Wall-nut Zombie";
+	case ZombieType::ZOMBIE_JALAPENO_HEAD:	return "Jalapeno Zombie";
+	case ZombieType::ZOMBIE_GATLING_HEAD:	return "Gatling Pea Zombie";
+	case ZombieType::ZOMBIE_SQUASH_HEAD:	return "Squash Zombie";
+	case ZombieType::ZOMBIE_TALLNUT_HEAD:	return "Tall-nut Zombie";
+	default:								break;
+	}
+
+	const ZombieDefinition& aDef = GetZombieDefinition(static_cast<ZombieType>(theZombieType));
+	std::string aKey = std::format("[{}]", aDef.mZombieName);
+	if (PvzpStringListExists(aKey))
+		return std::string(PvzpStringTranslate(aKey));
+	if (theZombieType == ZombieType::ZOMBIE_REDEYE_GARGANTUAR)
+		return "Giga-gargantuar";
+	return aDef.mZombieName;
+}
+
+void TrainerLoadSettings()
+{
+	std::ifstream aFile(Sexy::PathFromU8(SettingsPath()));
+	std::string aLine;
+	while (std::getline(aFile, aLine))
+	{
+		size_t anEquals = aLine.find('=');
+		if (anEquals == std::string::npos)
+			continue;
+		std::string aKey = aLine.substr(0, anEquals);
+		int aValue = 0;
+		std::istringstream aStream(aLine.substr(anEquals + 1));
+		if (!(aStream >> aValue))
+			continue;
+
+		for (const SettingsSwitch& aSwitch : SETTINGS_SWITCHES)
+		{
+			if (aKey == aSwitch.mKey)
+				gTrainer.*aSwitch.mValue = aValue != 0;
+		}
+		if (aKey == "stop_zombie_waves")
+		{
+			gTrainer.mStopZombieWavesOutsideSandbox = aValue != 0;
+			if (!gTrainer.mSandbox)
+				gTrainer.mStopZombieWaves = aValue != 0;
+		}
+		else if (aKey == "game_speed" && std::ranges::find(TRAINER_GAME_SPEEDS, aValue) != std::end(TRAINER_GAME_SPEEDS))
+		{
+			gTrainer.mGameSpeed = aValue;
+		}
+	}
+}
+
+void TrainerSaveSettings()
+{
+	std::ostringstream aText;
+	for (const SettingsSwitch& aSwitch : SETTINGS_SWITCHES)
+		aText << aSwitch.mKey << "=" << (gTrainer.*aSwitch.mValue ? 1 : 0) << "\n";
+	bool aStopZombieWaves = gTrainer.mSandbox ? gTrainer.mStopZombieWavesOutsideSandbox : gTrainer.mStopZombieWaves;
+	aText << "stop_zombie_waves=" << (aStopZombieWaves ? 1 : 0) << "\n";
+	aText << "game_speed=" << gTrainer.mGameSpeed << "\n";
+
+	std::string aData = aText.str();
+	gSexyAppBase->WriteBytesToFile(SettingsPath(), aData.data(), aData.size());
 }
 
 int TrainerClearLawn(Board* theBoard)
@@ -211,6 +302,8 @@ void TrainerStartBlankLevel(LawnApp* theApp, int theStage)
 	}
 	theApp->KillGameSelector();
 
+	if (!gTrainer.mSandbox)
+		gTrainer.mStopZombieWavesOutsideSandbox = gTrainer.mStopZombieWaves;
 	gTrainer.mSandbox = true;
 	gTrainer.mStopZombieWaves = true;
 	gTrainer.mBrush = TRAINER_BRUSH_NONE;
@@ -346,7 +439,7 @@ void TrainerLeaveSandbox()
 	if (gTrainer.mSandbox)
 	{
 		gTrainer.mSandbox = false;
-		gTrainer.mStopZombieWaves = false;
+		gTrainer.mStopZombieWaves = gTrainer.mStopZombieWavesOutsideSandbox;
 	}
 	gTrainer.mBrush = TRAINER_BRUSH_NONE;
 	gHasPendingLayout = false;

@@ -95,6 +95,7 @@ public:
 	int								mMaxPlays;
 	int								mMaxTime;
 	bool							mEasyPlantingCheat;
+	int								mEndlessSaveSlot;	// save slot of the endless survival being played
 	std::unique_ptr<PoolEffect>		mPoolEffect;
 	std::unique_ptr<ZenGarden>		mZenGarden;
 	std::unique_ptr<TrainerPanel>	mTrainerPanel;
@@ -181,6 +182,8 @@ public:
 	void							MakeNewBoard();
 	void							StartPlaying();
 	bool							TryLoadGame();
+	int								GetSaveSlot();
+	void							EraseSavedGame();
 	void							NewGame();
 	void							PreNewGame(GameMode theGameMode, bool theLookForSavedGame);
 	void							ShowGameSelector();
@@ -200,6 +203,7 @@ public:
 	bool					WriteCurrentUserConfig();
 	void							DoNeedRegisterDialog();
 	void							DoContinueDialog();
+	void							DoEndlessSaveSlotDialog(GameMode theGameMode);
 	void							DoPauseDialog();
 	void							FinishModelessDialogs();
 	Dialog*							DoDialog(int theDialogId, bool isModal, const std::string& theDialogHeader, const std::string& theDialogLines, const std::string& theDialogFooter, int theButtonMode) override;

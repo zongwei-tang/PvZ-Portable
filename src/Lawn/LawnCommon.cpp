@@ -162,9 +162,17 @@ std::unique_ptr<Checkbox> MakeNewCheckbox(int theId, CheckboxListener* theListen
 	return aCheckbox;
 }
 
-std::string GetSavedGameName(GameMode theGameMode, int theProfileId)
+std::string GetSavedGameName(GameMode theGameMode, int theProfileId, int theSlot)
 {
+	if (theSlot > 0 && LawnApp::IsSurvivalEndless(theGameMode))
+		return GetAppDataPath(std::format("userdata/game{}_{}_slot{}.v4", theProfileId, static_cast<int>(theGameMode), theSlot + 1));
 	return GetAppDataPath(std::format("userdata/game{}_{}.v4", theProfileId, static_cast<int>(theGameMode)));
+}
+
+// Small text file next to an endless survival save, so the slot picker can show how far the run got
+std::string GetSavedGameInfoName(GameMode theGameMode, int theProfileId, int theSlot)
+{
+	return GetAppDataPath(std::format("userdata/game{}_{}_slot{}.info", theProfileId, static_cast<int>(theGameMode), theSlot + 1));
 }
 
 std::string GetLegacySavedGameName(GameMode theGameMode, int theProfileId)
