@@ -45,6 +45,8 @@ public:
 	int								mZombieCol;	// -1 = right edge
 	int								mStage;
 	int								mSlot;
+	int								mEndlessFlags;	// flags already done when jumping in endless survival
+	int								mEndlessWave;	// waves into the next flag
 	std::vector<int>				mZombieTypes;
 
 public:
@@ -82,6 +84,7 @@ private:
 	void							DoStartBlankLevel();
 	void							DoSaveLevel();
 	void							DoLoadLevel();
+	void							DoJumpEndlessWave();
 };
 
 #endif

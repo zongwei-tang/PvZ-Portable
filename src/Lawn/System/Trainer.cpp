@@ -8,6 +8,7 @@
 #include "Music.h"
 #include "PlayerInfo.h"
 #include "../Board.h"
+#include "../Challenge.h"
 #include "../Plant.h"
 #include "../Zombie.h"
 #include "../../LawnApp.h"
@@ -216,6 +217,18 @@ std::string TrainerZombieName(int theZombieType)
 	return aDef.mZombieName;
 }
 
+bool TrainerSavedRunJumped(const std::string& theInfoPath)
+{
+	std::ifstream aFile(Sexy::PathFromU8(theInfoPath));
+	std::string aLine;
+	while (std::getline(aFile, aLine))
+	{
+		if (aLine.starts_with("trainer_jump=1"))
+			return true;
+	}
+	return false;
+}
+
 void TrainerLoadSettings()
 {
 	std::ifstream aFile(Sexy::PathFromU8(SettingsPath()));
@@ -280,6 +293,37 @@ int TrainerClearLawn(Board* theBoard)
 		aCount++;
 	}
 	return aCount;
+}
+
+bool TrainerJumpEndlessWave(Board* theBoard, int theFlags, int theWave, std::string& theMessage)
+{
+	LawnApp* anApp = theBoard->mApp;
+	if (!LawnApp::IsSurvivalEndless(anApp->mGameMode))
+	{
+		theMessage = "This only works in an endless survival.";
+		return false;
+	}
+	Challenge* aChallenge = theBoard->mChallenge.get();
+	if (theBoard->mNextSurvivalStageCounter > 0 || theBoard->mLevelAwardSpawned || theBoard->mBoardFadeOutCounter >= 0 ||
+		aChallenge->mChallengeState != ChallengeState::STATECHALLENGE_NORMAL)
+	{
+		theMessage = "Wait until the next round has started.";
+		return false;
+	}
+
+	// A round of endless survival is 20 waves (2 flags); the round number sets how strong the waves are
+	int aWavesPerFlag = theBoard->GetNumWavesPerFlag();
+	int aWavesPerStage = theBoard->GetNumWavesPerSurvivalStage();
+	int aTotalWaves = std::clamp(theFlags, 0, TRAINER_MAX_ENDLESS_FLAGS) * aWavesPerFlag + std::clamp(theWave, 0, aWavesPerFlag - 1);
+	gTrainer.mEndlessJumped = true;
+	aChallenge->mSurvivalStage = aTotalWaves / aWavesPerStage;
+	theBoard->mLevelComplete = false;
+	theBoard->InitZombieWaves();
+	theBoard->mCurrentWave = aTotalWaves % aWavesPerStage;
+
+	theMessage = std::format("Jumped to {} flags; wave {} is next. This run no longer sets the best-flags record.",
+		aTotalWaves / aWavesPerFlag, aTotalWaves % aWavesPerFlag + 1);
+	return true;
 }
 
 bool TrainerCanStartLevel(LawnApp* theApp)

@@ -72,7 +72,9 @@ TrainerPanel::TrainerPanel(LawnApp* theApp) :
 	mZombieRow(-1),
 	mZombieCol(-1),
 	mStage(0),
-	mSlot(0)
+	mSlot(0),
+	mEndlessFlags(0),
+	mEndlessWave(0)
 {
 	mZOrder = 1000000; // above the board and every dialog
 	mHasAlpha = true;
@@ -209,7 +211,24 @@ void TrainerPanel::BuildItems()
 	AddButton(550, aY, 65, "Send", [this]() { DoSpawnZombie(); });
 	AddButton(700, aY, 60, "Mouse", [this]() { DoStartBrush(TRAINER_BRUSH_ZOMBIE); });
 
-	AddButton(660, 550, 100, "Close", [this]() { Close(); });
+	aY = 550;
+	auto aStepFlags = [this](int theAmount)
+	{
+		return [this, theAmount]() { mEndlessFlags = std::clamp(mEndlessFlags + theAmount, 0, TRAINER_MAX_ENDLESS_FLAGS); };
+	};
+	AddButton(40, aY, 44, "-100", aStepFlags(-100));
+	AddButton(88, aY, 40, "-10", aStepFlags(-10));
+	AddSelector(132, aY, 160,
+		[this]() { return std::format("Flags {}", mEndlessFlags); },
+		[aStepFlags](int theDir) { aStepFlags(theDir)(); });
+	AddButton(296, aY, 40, "+10", aStepFlags(10));
+	AddButton(340, aY, 44, "+100", aStepFlags(100));
+	AddSelector(394, aY, 140,
+		[this]() { return std::format("Wave {}/10", mEndlessWave + 1); },
+		[this](int theDir) { mEndlessWave = Wrap(mEndlessWave + theDir, 10); });
+	AddButton(544, aY, 90, "Jump", [this]() { DoJumpEndlessWave(); });
+
+	AddButton(660, aY, 100, "Close", [this]() { Close(); });
 }
 
 void TrainerPanel::Toggle()
@@ -378,6 +397,7 @@ void TrainerPanel::Draw(Graphics* g)
 	g->DrawString("Level maker", 420, 352);
 	g->DrawString("Put a plant on the lawn  (Mouse: click the lawn to place, right-click stops)", 40, 430);
 	g->DrawString("Send a zombie", 40, 490);
+	g->DrawString("Endless survival: jump to a flag and wave", 40, 545);
 
 	_Font* aFont = Sexy::FONT_DWARVENTODCRAFT15;
 	g->SetFont(aFont);
@@ -432,7 +452,7 @@ void TrainerPanel::Draw(Graphics* g)
 	if (!mStatus.empty())
 	{
 		g->SetColor(Color(255, 230, 80));
-		g->DrawString(mStatus, 40, 568);
+		g->DrawString(mStatus, 40, 594);
 	}
 }
 
@@ -616,6 +636,14 @@ void TrainerPanel::DoSaveLevel()
 	if (aBoard == nullptr)
 		return;
 	TrainerSaveLayout(aBoard, mSlot, mStatus);
+}
+
+void TrainerPanel::DoJumpEndlessWave()
+{
+	Board* aBoard = PlayingBoard();
+	if (aBoard == nullptr)
+		return;
+	TrainerJumpEndlessWave(aBoard, mEndlessFlags, mEndlessWave, mStatus);
 }
 
 void TrainerPanel::DoLoadLevel()

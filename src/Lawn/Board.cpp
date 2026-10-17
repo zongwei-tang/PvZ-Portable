@@ -332,6 +332,8 @@ void Board::TryToSaveGame()
 		if (LawnSaveGame(this, aFileName) && mApp->IsSurvivalEndless(mApp->mGameMode))
 		{
 			std::string anInfo = std::format("flags={}\n", GetSurvivalFlagsCompleted());
+			if (gTrainer.mEndlessJumped)
+				anInfo += "trainer_jump=1\n";
 			mApp->WriteBytesToFile(GetSavedGameInfoName(mApp->mGameMode, mApp->mPlayerInfo->mId, aSlot), anInfo.data(), anInfo.size());
 		}
 		mApp->ClearUpdateBacklog();
@@ -5057,7 +5059,7 @@ int Board::GetSurvivalFlagsCompleted()
 
 void Board::SurvivalSaveScore()
 {
-	if (!mApp->IsSurvivalMode())
+	if (!mApp->IsSurvivalMode() || gTrainer.mEndlessJumped)
 		return;
 
 	uint32_t aFlagsCompleted = GetSurvivalFlagsCompleted();

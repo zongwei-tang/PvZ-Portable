@@ -381,6 +381,7 @@ void LawnApp::EraseSavedGame()
 void LawnApp::MakeNewBoard()
 {
 	KillBoard();
+	gTrainer.mEndlessJumped = false;
 	mBoard = new Board(this);
 	mBoard->Resize(0, 0, mWidth, mHeight);
 	mWidgetManager->AddWidget(mBoard);
@@ -416,6 +417,8 @@ bool LawnApp::TryLoadGame()
 		MakeNewBoard();
 		if (mBoard->LoadGame(aSaveName))
 		{
+			if (IsSurvivalEndless(mGameMode))
+				gTrainer.mEndlessJumped = TrainerSavedRunJumped(GetSavedGameInfoName(mGameMode, mPlayerInfo->mId, aSlot));
 			mFirstTimeGameSelector = false;
 			if (mBoard->mLevelAwardSpawned) // Ensure save cleanup after award collection
 				mBoardResult = BoardResult::BOARDRESULT_WON;
