@@ -2121,7 +2121,7 @@ void Plant::UpdateMagnetShroom()
 		{
 			if (aGridItem->mDead)
 				continue;
-			if (aGridItem->mGridItemType == GridItemType::GRIDITEM_LADDER)
+			if (aGridItem->mGridItemType == GridItemType::GRIDITEM_LADDER && !mBoard->LaddersArePermanent())
 			{
 				int aDiffX = abs(aGridItem->mGridX - mPlantCol);
 				int aDiffY = abs(aGridItem->mGridY - mRow);
@@ -2347,7 +2347,7 @@ void Plant::Squish()
 	RemoveEffects();
 
 	GridItem* aLadder = mBoard->GetLadderAt(mPlantCol, mRow);
-	if (aLadder)
+	if (aLadder && !mBoard->LaddersArePermanent())
 	{
 		aLadder->GridItemDie();
 	}
@@ -4242,7 +4242,7 @@ void Plant::BurnRow(int theRow)
 	{
 		if (aGridItem->mDead)
 			continue;
-		if (aGridItem->mGridY == theRow && aGridItem->mGridItemType == GridItemType::GRIDITEM_LADDER)
+		if (aGridItem->mGridY == theRow && aGridItem->mGridItemType == GridItemType::GRIDITEM_LADDER && !mBoard->LaddersArePermanent())
 		{
 			aGridItem->GridItemDie();
 		}
@@ -4945,7 +4945,7 @@ void Plant::Die()
 	if (!Plant::IsFlying(mSeedType) && IsOnBoard())
 	{
 		GridItem* aLadder = mBoard->GetLadderAt(mPlantCol, mRow);
-		if (aLadder)
+		if (aLadder && !mBoard->LaddersArePermanent())
 		{
 			aLadder->GridItemDie();
 		}

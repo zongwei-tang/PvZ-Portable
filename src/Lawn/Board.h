@@ -450,6 +450,7 @@ public:
 	GridItem*			GetCraterAt(int theGridX, int theGridY);
 	GridItem*			GetGraveStoneAt(int theGridX, int theGridY);
 	GridItem*			GetLadderAt(int theGridX, int theGridY);
+	bool				LaddersArePermanent();
 	GridItem*			AddALadder(int theGridX, int theGridY);
 	GridItem*			AddACrater(int theGridX, int theGridY);
 	void							InitLawnMowers();

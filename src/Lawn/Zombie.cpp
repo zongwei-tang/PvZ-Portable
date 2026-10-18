@@ -2375,7 +2375,7 @@ void Zombie::BurnRow(int theRow)  // only used by the DO_FIX_BUGS jalapeno zombi
 	{
 		if (aGridItem->mDead)
 			continue;
-		if (aGridItem->mGridY == theRow && aGridItem->mGridItemType == GridItemType::GRIDITEM_LADDER)
+		if (aGridItem->mGridY == theRow && aGridItem->mGridItemType == GridItemType::GRIDITEM_LADDER && !mBoard->LaddersArePermanent())
 		{
 			aGridItem->GridItemDie();
 		}

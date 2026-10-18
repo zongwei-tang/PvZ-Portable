@@ -459,6 +459,13 @@ int Board::MakeRenderOrder(RenderLayer theRenderLayer, int theRow, int theLayerO
 	return theRow * static_cast<int>(RenderLayer::RENDER_LAYER_ROW_OFFSET) + theRenderLayer + theLayerOffset;
 }
 
+// Local patch: in endless survival a placed ladder stays for the rest of the run. Explosions, Jalapenos,
+// Magnet-shrooms and the plant under it dying no longer remove it.
+bool Board::LaddersArePermanent()
+{
+	return mApp->IsSurvivalEndless(mApp->mGameMode);
+}
+
 GridItem* Board::AddALadder(int theGridX, int theGridY)
 {
 	GridItem* aLadder = mGridItems.DataArrayAlloc();
@@ -9380,7 +9387,7 @@ int Board::KillAllZombiesInRadius(int theRow, int theX, int theY, int theRadius,
 	{
 		if (aGridItem->mDead)
 			continue;
-		if (aGridItem->mGridItemType == GridItemType::GRIDITEM_LADDER)
+		if (aGridItem->mGridItemType == GridItemType::GRIDITEM_LADDER && !LaddersArePermanent())
 		{
 			if (GridInRange(aGridItem->mGridX, aGridItem->mGridY, aGridX, aGridY, theRowRange, theRowRange))
 			{
