@@ -36,6 +36,7 @@
 #include "Lawn/ZenGarden.h"
 #include "PvzpLib/Trail.h"
 #include "Lawn/System/Music.h"
+#include "Lawn/System/CloudSave.h"
 #include "Lawn/System/SaveGame.h"
 #include "PvzpLib/PvzpDebug.h"
 #include "PvzpLib/PvzpFoley.h"
@@ -246,6 +247,7 @@ void LawnApp::Shutdown()
 	if (!mShutdown)
 	{
 		SexyAppBase::Shutdown();
+		CloudSave::Shutdown();	// after Shutdown() wrote the last saves
 	}
 }
 
@@ -1230,6 +1232,7 @@ void LawnApp::Init()
 	PerfTimer mTimer;
 	mTimer.Start();
 
+	CloudSave::Init();
 	mProfileMgr->Load();
 
 	std::string aCurUser;
@@ -1667,6 +1670,8 @@ void LawnApp::UpdateFrames()
 
 		CheckForGameEnd();
 	}
+
+	CloudSave::Update();
 }
 
 void LawnApp::ToggleSlowMo()
@@ -1959,6 +1964,10 @@ void LawnApp::ButtonDepress(int theId)
 			FinishTimesUpDialog();
 			return;
 
+		case Dialogs::DIALOG_CLOUD_SAVE_CONFLICT:
+			CloudSave::ResolveConflict(true);
+			return;
+
 		case 20008:
 			KillDialog(20008);
 			KillDialog(Dialogs::DIALOG_CHECKING_UPDATES);
@@ -2005,6 +2014,10 @@ void LawnApp::ButtonDepress(int theId)
 
 		case Dialogs::DIALOG_TIMESUP:
 			FinishTimesUpDialog();
+			return;
+
+		case Dialogs::DIALOG_CLOUD_SAVE_CONFLICT:
+			CloudSave::ResolveConflict(false);
 			return;
 
 		case 10008:

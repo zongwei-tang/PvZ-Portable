@@ -321,6 +321,7 @@ enum Dialogs : int32_t
 	DIALOG_ZOMBATAR_TOS,                        // 51: terms of service
 	DIALOG_ZOMBATAR_DELETE,                     // 52
 	DIALOG_ENDLESS_SAVE_SLOT,                   // picking a save slot for endless survival
+	DIALOG_CLOUD_SAVE_CONFLICT,                 // the saves changed both on this device and in the cloud
 	NUM_DIALOGS
 };
 enum DebugTextMode : int32_t

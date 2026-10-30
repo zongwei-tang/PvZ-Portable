@@ -1,5 +1,9 @@
 {
   "dependencies": [
+    {
+      "name": "curl",
+      "platform": "!android & !ios"
+    },
     "libjpeg-turbo",
     "libopenmpt",
     "libpng",

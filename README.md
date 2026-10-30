@@ -48,6 +48,7 @@ A **cross-platform** community-driven reimplementation of Plants vs. Zombies: Ga
 - [x] Unlockable **Hidden Limbo Page** with additional levels in the original game
   - To unlock it, open the Mini-Games / Puzzle / Survival selection screen and tap any blank area **5 times in rapid succession**
 - [x] **Record and deterministically replay** gameplay sessions — see [Recording and Playing Back Gameplay](#recording-and-playing-back-gameplay)
+- [x] **Cloud save over WebDAV** on desktop systems — see [Cloud Save (WebDAV)](#cloud-save-webdav)
 
 This project supports the following platforms (including but not limited to):
 
@@ -161,13 +162,14 @@ Before building on PC, ensure you have the necessary dependencies installed:
 - **Audio**: `libopenmpt`
 - **Image**: `libpng`, `libjpeg-turbo`
 - **Windowing/Input**: `SDL2`
+- **Cloud save** (optional): `libcurl`. Without it the game builds without cloud save.
 
 ### Arch Linux
 
 You can install the required dependencies using the following command:
 
 ```bash
-sudo pacman -S --needed base-devel cmake libjpeg-turbo libopenmpt libpng ninja sdl2-compat
+sudo pacman -S --needed base-devel cmake curl libjpeg-turbo libopenmpt libpng ninja sdl2-compat
 ```
 
 ### Debian/Ubuntu
@@ -175,7 +177,7 @@ sudo pacman -S --needed base-devel cmake libjpeg-turbo libopenmpt libpng ninja s
 You can install the required dependencies using the following command:
 
 ```bash
-sudo apt install cmake ninja-build libjpeg-dev libopenmpt-dev libpng-dev libsdl2-dev
+sudo apt install cmake ninja-build libcurl4-openssl-dev libjpeg-dev libopenmpt-dev libpng-dev libsdl2-dev
 ```
 
 ### Windows (MSYS2 UCRT64)
@@ -183,7 +185,7 @@ sudo apt install cmake ninja-build libjpeg-dev libopenmpt-dev libpng-dev libsdl2
 You can install the required dependencies using the following command:
 
 ```bash
-pacman -S --needed base-devel mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-libjpeg-turbo mingw-w64-ucrt-x86_64-libopenmpt mingw-w64-ucrt-x86_64-libpng mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-SDL2
+pacman -S --needed base-devel mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-curl mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-libjpeg-turbo mingw-w64-ucrt-x86_64-libopenmpt mingw-w64-ucrt-x86_64-libpng mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-SDL2
 ```
 
 ### macOS (Homebrew)
@@ -229,6 +231,7 @@ You can customize the game features by adding options to the first `cmake` comma
 | `PVZ_DEBUG` | `OFF`<br>(`ON` if `CMAKE_BUILD_TYPE` is `Debug`) | Enable **cheat keys**, debug displays and other debug features. |
 | `DO_FIX_BUGS` | `OFF` | Apply community fixes for "bugs" of official 1.2.0.1073 GOTY Edition.[^1] However, these "bugs" are usually **considered "features"** by many players. |
 | `CONSOLE` | `OFF`<br>(`ON` if `CMAKE_BUILD_TYPE` is `Debug`) | Show a console window (Windows only). |
+| `CLOUD_SAVE` | `ON`<br>(`OFF` on WebAssembly, Switch, Android and iOS) | Build the [WebDAV cloud save](#cloud-save-webdav). Needs `libcurl`; when it is not found the game builds without cloud save. |
 | `BUILD_STATIC` | `OFF` | Link dependencies statically (Windows with MinGW-based toolchains, glibc-based Linux). Use a vcpkg `-static` triplet for MSVC. |
 
 [^1]: Current `DO_FIX_BUGS` includes the following fixes:
@@ -308,6 +311,32 @@ python3 scripts/pvzp-v4-converter.py export ~/.local/io.github.wszqkzqk/PvZPorta
 mv ~/.local/io.github.wszqkzqk/PvZPortable/userdata/game1_13.v4 ~/.local/io.github.wszqkzqk/PvZPortable/userdata/game1_13.v4.bak
 python3 scripts/pvzp-v4-converter.py import level.yaml ~/.local/io.github.wszqkzqk/PvZPortable/userdata/game1_13.v4
 ```
+
+## Cloud Save (WebDAV)
+
+Desktop builds can keep the `userdata/` folder (profiles, adventure progress, coins, Zen Garden and mid-level saves) in sync with a WebDAV folder, so you can continue on another computer. Any WebDAV server works, e.g. Nextcloud, ownCloud, Synology, Apache `mod_dav` or Jianguoyun (坚果云).
+
+On first start the game writes a `cloudsave.ini` template next to `registry.regemu` in the per-user data folder. Fill it in and restart the game:
+
+```ini
+enabled=1
+url=https://cloud.example.com/remote.php/dav/files/alice/
+username=alice
+password=app-password-here
+folder=PvZPortable
+```
+
+- `url` is the WebDAV root of your account; the saves go into `folder` below it.
+- The password is stored as **plain text**. Use an app password (Nextcloud, Jianguoyun and most others offer them) rather than your account password.
+
+How syncing works:
+
+- At start the game downloads newer saves from the cloud before loading the profiles.
+- When saves change, they are uploaded in the background a few seconds later, and once more when the game exits. Every 5 minutes the game also checks the cloud for saves from other devices; those are loaded the next time the main menu is idle.
+- The folder is synced as a whole, never file by file, because profile ids differ between devices.
+- If the saves changed both on this device and in the cloud since the last sync, the main menu asks which copy to keep. The other copy is backed up to `cloudsave-backup/` in the per-user data folder.
+- Without a connection the game runs normally and retries later.
+- Server files: `manifest.txt` is the committed state and `files/` holds the save files. Do not edit them by hand.
 
 ## Recording and Playing Back Gameplay
 
