@@ -20,7 +20,6 @@
 #include <cstdlib>
 #include <ctime>
 #include <format>
-#include <memory>
 #include <thread>
 #include <SDL.h>
 #ifndef _WIN32
@@ -48,8 +47,10 @@ enum class Pending
 	CONFLICT,	// both changed: ask the player on the main menu
 };
 
-std::unique_ptr<CloudSync::Engine>	gEngine;
-std::thread							gWorker;
+// Plain pointers: an exit() that skips Shutdown() must not run a std::thread destructor (std::terminate on a
+// joinable thread) or free the engine under a still running worker.
+CloudSync::Engine*					gEngine = nullptr;
+std::thread*						gWorker = nullptr;
 std::atomic<bool>					gWorkerDone{ false };
 CloudSync::Result					gWorkerResult = CloudSync::Result::OK;
 std::string							gWorkerSignature;
@@ -156,9 +157,11 @@ void HandleResult(CloudSync::Result theResult, const std::string& theSignature)
 
 void JoinWorker()
 {
-	if (!gWorker.joinable())
+	if (gWorker == nullptr)
 		return;
-	gWorker.join();
+	gWorker->join();
+	delete gWorker;
+	gWorker = nullptr;
 	gWorkerDone = false;
 	LogResult("background sync", gWorkerResult);
 	HandleResult(gWorkerResult, gWorkerSignature);
@@ -170,7 +173,7 @@ void StartWorker()
 	CloudSync::Snapshot aSnapshot = gEngine->ReadLocal();
 	std::string aSummary = Summary();
 	gWorkerDone = false;
-	gWorker = std::thread([aSnapshot = std::move(aSnapshot), aSummary = std::move(aSummary)]()
+	gWorker = new std::thread([aSnapshot = std::move(aSnapshot), aSummary = std::move(aSummary)]()
 	{
 		gWorkerResult = gEngine->Sync(aSnapshot, aSummary, false);
 		gWorkerDone = true;
@@ -240,7 +243,7 @@ void Init()
 		return;
 
 	CloudSync::GlobalInit();
-	gEngine = std::make_unique<CloudSync::Engine>(aConfig, DataDir(), Sexy::PathFromU8(Sexy::GetAppDataPath(".")), DeviceName());
+	gEngine = new CloudSync::Engine(aConfig, DataDir(), Sexy::PathFromU8(Sexy::GetAppDataPath(".")), DeviceName());
 
 	// The profiles are not loaded yet, so a newer cloud save can simply replace the files.
 	// Uploading waits for Update(), when the summary of the loaded profile is known.
@@ -259,7 +262,7 @@ void Update()
 	if (!gEngine)
 		return;
 
-	if (gWorker.joinable())
+	if (gWorker)
 	{
 		if (!gWorkerDone)
 			return;
@@ -357,7 +360,8 @@ void Shutdown()
 		if (aSignature != gSyncedSignature)
 			LogResult("final sync", gEngine->Sync(gEngine->ReadLocal(), Summary(), false));
 	}
-	gEngine.reset();
+	delete gEngine;
+	gEngine = nullptr;
 }
 
 }

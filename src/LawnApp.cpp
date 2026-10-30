@@ -193,6 +193,7 @@ LawnApp::~LawnApp()
 		KillBoard();
 	}
 	ProcessSafeDeleteList();
+	CloudSave::Shutdown();	// no-op unless the app went away without Shutdown()
 
 	if (mTitleScreen)
 	{
@@ -241,6 +242,7 @@ void LawnApp::Shutdown()
 	{
 		mLoadingFailed = true;
 		SexyAppBase::Shutdown();
+		CloudSave::Shutdown();
 		return;
 	}
 

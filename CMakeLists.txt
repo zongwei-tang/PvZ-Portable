@@ -125,7 +125,8 @@ option(CONSOLE "Show console on Windows" ${WIN_CONSOLE_DEFAULT})
 option(DO_FIX_BUGS "Define DO_FIX_BUGS macro (Community fixes for original game bugs of 1.2.0.1073 GOTY Edition)" OFF)
 # WebDAV cloud save needs libcurl and is only built for desktop systems so far. WebAssembly is left out because most
 # WebDAV servers refuse the browser's cross-origin requests; Switch, Android and iOS have no libcurl set up here.
-if(NINTENDO_SWITCH OR ANDROID OR IOS OR EMSCRIPTEN)
+# BUILD_STATIC builds would pick up a shared system libcurl (and its TLS stack), so they leave it out too.
+if(NINTENDO_SWITCH OR ANDROID OR IOS OR EMSCRIPTEN OR BUILD_STATIC)
 	set(CLOUD_SAVE_DEFAULT OFF)
 else()
 	set(CLOUD_SAVE_DEFAULT ON)

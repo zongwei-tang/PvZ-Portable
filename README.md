@@ -231,7 +231,7 @@ You can customize the game features by adding options to the first `cmake` comma
 | `PVZ_DEBUG` | `OFF`<br>(`ON` if `CMAKE_BUILD_TYPE` is `Debug`) | Enable **cheat keys**, debug displays and other debug features. |
 | `DO_FIX_BUGS` | `OFF` | Apply community fixes for "bugs" of official 1.2.0.1073 GOTY Edition.[^1] However, these "bugs" are usually **considered "features"** by many players. |
 | `CONSOLE` | `OFF`<br>(`ON` if `CMAKE_BUILD_TYPE` is `Debug`) | Show a console window (Windows only). |
-| `CLOUD_SAVE` | `ON`<br>(`OFF` on WebAssembly, Switch, Android and iOS) | Build the [WebDAV cloud save](#cloud-save-webdav). Needs `libcurl`; when it is not found the game builds without cloud save. |
+| `CLOUD_SAVE` | `ON`<br>(`OFF` on WebAssembly, Switch, Android, iOS and with `BUILD_STATIC`) | Build the [WebDAV cloud save](#cloud-save-webdav). Needs `libcurl`; when it is not found the game builds without cloud save. |
 | `BUILD_STATIC` | `OFF` | Link dependencies statically (Windows with MinGW-based toolchains, glibc-based Linux). Use a vcpkg `-static` triplet for MSVC. |
 
 [^1]: Current `DO_FIX_BUGS` includes the following fixes:
