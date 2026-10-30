@@ -36,6 +36,7 @@ struct Config
 };
 
 bool		LoadConfig(const std::filesystem::path& thePath, Config& theConfig);	// false if the file is missing
+bool		WriteConfig(const std::filesystem::path& thePath, const Config& theConfig);
 bool		WriteConfigTemplate(const std::filesystem::path& thePath);
 bool		IsSyncedFileName(std::string_view theName);
 uint64_t	HashBytes(std::string_view theData);

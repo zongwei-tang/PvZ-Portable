@@ -316,7 +316,9 @@ python3 scripts/pvzp-v4-converter.py import level.yaml ~/.local/io.github.wszqkz
 
 Desktop builds can keep the `userdata/` folder (profiles, adventure progress, coins, Zen Garden and mid-level saves) in sync with a WebDAV folder, so you can continue on another computer. Any WebDAV server works, e.g. Nextcloud, ownCloud, Synology, Apache `mod_dav` or Jianguoyun (坚果云).
 
-On first start the game writes a `cloudsave.ini` template next to `registry.regemu` in the per-user data folder. Fill it in and restart the game:
+Set it up in the game: on the main menu open **Options → Cloud Save**, tick **Enabled**, enter the server URL, username and password, then press **Sync Now** to try the connection or **Save**. The button is only on the main menu, because a sync can replace the loaded profiles.
+
+The settings are kept in `cloudsave.ini` next to `registry.regemu` in the per-user data folder, which you can also edit by hand and then restart the game:
 
 ```ini
 enabled=1

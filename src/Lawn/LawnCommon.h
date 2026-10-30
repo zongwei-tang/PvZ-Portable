@@ -68,6 +68,7 @@ void				TileImageVertically(Graphics* g, Image* theImage, int theX, int theY, in
 // Widgets
 std::unique_ptr<Checkbox>	MakeNewCheckbox(int theId, CheckboxListener* theListener, bool theDefault);
 std::unique_ptr<LawnEditWidget>	CreateEditWidget(int theId, EditListener* theListener, Dialog* theDialog);
+void						StyleEditWidget(EditWidget* theEditWidget);	// the look of CreateEditWidget(), for subclasses
 void						DrawEditBox(Graphics* g, EditWidget* theWidget);
 
 // Miscellaneous

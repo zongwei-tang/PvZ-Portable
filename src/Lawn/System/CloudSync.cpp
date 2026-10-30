@@ -142,18 +142,26 @@ bool LoadConfig(const fs::path& thePath, Config& theConfig)
 	return true;
 }
 
-bool WriteConfigTemplate(const fs::path& thePath)
+bool WriteConfig(const fs::path& thePath, const Config& theConfig)
 {
-	return WriteFile(thePath,
+	// values are single lines; a stray newline would start a new key
+	auto aLine = [](std::string_view theValue) { return std::string(Trim(theValue.substr(0, theValue.find_first_of("\r\n")))); };
+	return WriteFileAtomic(thePath, std::format(
 		"# PvZ-Portable cloud save over WebDAV (Nextcloud, ownCloud, Jianguoyun, Synology, Apache mod_dav, ...).\n"
-		"# Set enabled=1 and fill in the server details, then restart the game.\n"
+		"# Edit this in the game (Options on the main menu, Cloud Save), or set enabled=1 here and restart the game.\n"
 		"# url is the WebDAV root of your account, e.g. https://cloud.example.com/remote.php/dav/files/alice/\n"
 		"# The password is stored here as plain text: prefer an app password over your account password.\n"
-		"enabled=0\n"
-		"url=\n"
-		"username=\n"
-		"password=\n"
-		"folder=PvZPortable\n");
+		"enabled={}\n"
+		"url={}\n"
+		"username={}\n"
+		"password={}\n"
+		"folder={}\n",
+		theConfig.mEnabled ? 1 : 0, aLine(theConfig.mUrl), aLine(theConfig.mUsername), aLine(theConfig.mPassword), aLine(theConfig.mFolder)));
+}
+
+bool WriteConfigTemplate(const fs::path& thePath)
+{
+	return WriteConfig(thePath, Config());
 }
 
 bool IsSyncedFileName(std::string_view theName)

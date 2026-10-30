@@ -49,6 +49,7 @@ protected:
 		NewOptionsDialog_SoundVolume,
 		NewOptionsDialog_Fullscreen,
 		NewOptionsDialog_HardwareAcceleration,
+		NewOptionsDialog_CloudSave,
 	};
 
 public:
@@ -60,6 +61,7 @@ public:
 	std::unique_ptr<LawnStoneButton>	mAlmanacButton;
 	std::unique_ptr<LawnStoneButton>	mBackToMainButton;
 	std::unique_ptr<LawnStoneButton>	mRestartButton;
+	std::unique_ptr<LawnStoneButton>	mCloudSaveButton;		// main menu only, in the slot of the hidden Restart button
 	std::unique_ptr<NewLawnButton>		mBackToGameButton;
 	bool								mFromGameSelector;
 

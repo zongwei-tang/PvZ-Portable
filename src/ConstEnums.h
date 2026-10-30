@@ -322,6 +322,7 @@ enum Dialogs : int32_t
 	DIALOG_ZOMBATAR_DELETE,                     // 52
 	DIALOG_ENDLESS_SAVE_SLOT,                   // picking a save slot for endless survival
 	DIALOG_CLOUD_SAVE_CONFLICT,                 // the saves changed both on this device and in the cloud
+	DIALOG_CLOUD_SAVE_SETTINGS,                 // WebDAV server, login and sync now
 	NUM_DIALOGS
 };
 enum DebugTextMode : int32_t

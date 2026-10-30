@@ -23,6 +23,7 @@
 #include "GameButton.h"
 #include "../Cutscene.h"
 #include "AlmanacDialog.h"
+#include "CloudSaveDialog.h"
 #include "../LawnCommon.h"
 #include "../../LawnApp.h"
 #include "../System/Music.h"
@@ -45,6 +46,12 @@ NewOptionsDialog::NewOptionsDialog(LawnApp* theApp, bool theFromGameSelector) :
 	mAlmanacButton = MakeButton(NewOptionsDialog::NewOptionsDialog_Almanac, this, "[VIEW_ALMANAC_BUTTON]");
 	mRestartButton = MakeButton(NewOptionsDialog::NewOptionsDialog_Restart, this, "[RESTART_LEVEL]");
 	mBackToMainButton = MakeButton(NewOptionsDialog::NewOptionsDialog_MainMenu, this, "[MAIN_MENU_BUTTON]");
+	mCloudSaveButton = MakeButton(NewOptionsDialog::NewOptionsDialog_CloudSave, this, "Cloud Save");
+#ifdef PVZP_CLOUD_SAVE
+	mCloudSaveButton->SetVisible(theFromGameSelector);
+#else
+	mCloudSaveButton->SetVisible(false);
+#endif
 
 	mBackToGameButton = MakeNewButton(
 		Dialog::ID_OK,
@@ -123,6 +130,7 @@ void NewOptionsDialog::AddedToManager(Sexy::WidgetManager* theWidgetManager)
 	Dialog::AddedToManager(theWidgetManager);
 	AddWidget(mAlmanacButton.get());
 	AddWidget(mRestartButton.get());
+	AddWidget(mCloudSaveButton.get());
 	AddWidget(mBackToMainButton.get());
 	AddWidget(mMusicVolumeSlider.get());
 	AddWidget(mSfxVolumeSlider.get());
@@ -142,6 +150,7 @@ void NewOptionsDialog::RemovedFromManager(Sexy::WidgetManager* theWidgetManager)
 	RemoveWidget(mBackToMainButton.get());
 	RemoveWidget(mBackToGameButton.get());
 	RemoveWidget(mRestartButton.get());
+	RemoveWidget(mCloudSaveButton.get());
 }
 
 void NewOptionsDialog::Resize(int theX, int theY, int theWidth, int theHeight)
@@ -153,6 +162,7 @@ void NewOptionsDialog::Resize(int theX, int theY, int theWidth, int theHeight)
 	mFullscreenCheckbox->Resize(284, 206, 46, 45);
 	mAlmanacButton->Resize(107, 241, 209, 46);
 	mRestartButton->Resize(mAlmanacButton->mX, mAlmanacButton->mY + 43, 209, 46);
+	mCloudSaveButton->Resize(mRestartButton->mX, mRestartButton->mY, 209, 46);
 	mBackToMainButton->Resize(mRestartButton->mX, mRestartButton->mY + 43, 209, 46);
 	mBackToGameButton->Resize(30, 381, mBackToGameButton->mWidth, mBackToGameButton->mHeight);
 
@@ -386,5 +396,12 @@ void NewOptionsDialog::ButtonDepress(int theId)
 	case NewOptionsDialog::NewOptionsDialog_Update:
 		mApp->CheckForUpdates();
 		break;
+
+#ifdef PVZP_CLOUD_SAVE
+	case NewOptionsDialog::NewOptionsDialog_CloudSave:
+		mApp->KillNewOptionsDialog();
+		CloudSaveDialog::Show(mApp);
+		break;
+#endif
 	}
 }

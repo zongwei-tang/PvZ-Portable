@@ -55,7 +55,9 @@ std::atomic<bool>					gWorkerDone{ false };
 CloudSync::Result					gWorkerResult = CloudSync::Result::OK;
 std::string							gWorkerSignature;
 
+CloudSync::Config	gConfig;
 Pending			gPending = Pending::NONE;
+std::string		gStatus;				// what the settings dialog shows about the last sync
 std::string		gSyncedSignature;		// the userdata folder as of the last sync that left both sides equal
 std::string		gSeenSignature;
 Clock::time_point	gSeenAt;
@@ -125,12 +127,28 @@ std::string FormatTime(int64_t theTime)
 	return aText;
 }
 
+std::string NowText()
+{
+	return FormatTime(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
 void LogResult(const char* theWhat, CloudSync::Result theResult)
 {
 	if (theResult == CloudSync::Result::OK)
 		PvzpLogLn("cloud save: {} ok", theWhat);
 	else
 		PvzpLogLn("cloud save: {} {}: {}", theWhat, CloudSync::ResultName(theResult), gEngine->GetLastError());
+
+	switch (theResult)
+	{
+	case CloudSync::Result::OK:				gStatus = std::format("Synced at {}.", NowText()); break;
+	case CloudSync::Result::OFFLINE:		gStatus = std::format("Can't reach the server: {}", gEngine->GetLastError()); break;
+	case CloudSync::Result::FAILED:			gStatus = std::format("Sync failed: {}", gEngine->GetLastError()); break;
+	case CloudSync::Result::CONFLICT:		gStatus = "Both copies changed. You will be asked which one to keep."; break;
+	case CloudSync::Result::PULL_NEEDED:	gStatus = "A newer cloud save will be loaded on the main menu."; break;
+	case CloudSync::Result::PUSH_NEEDED:	gStatus = "Waiting to upload."; break;
+	case CloudSync::Result::DISABLED:		gStatus = "Cloud save is off."; break;
+	}
 }
 
 // Applies a sync result that was computed against the files of theSignature.
@@ -228,22 +246,43 @@ void AskAboutConflict()
 	gLawnApp->mWidgetManager->SetFocus(aDialog);
 }
 
+fs::path ConfigPath()
+{
+	return Sexy::PathFromU8(Sexy::GetAppDataPath("cloudsave.ini"));
+}
+
+// Starts over with theConfig: drops the running engine and anything it was waiting for.
+void StartEngine(const CloudSync::Config& theConfig)
+{
+	JoinWorker();
+	delete gEngine;
+	gEngine = nullptr;
+	gConfig = theConfig;
+	gPending = Pending::NONE;
+	gSyncedSignature.clear();
+	gSeenSignature.clear();
+	gStatus = theConfig.mEnabled ? "Not synced yet." : "Cloud save is off.";
+	if (!theConfig.mEnabled)
+		return;
+
+	CloudSync::GlobalInit();
+	gEngine = new CloudSync::Engine(theConfig, DataDir(), Sexy::PathFromU8(Sexy::GetAppDataPath(".")), DeviceName());
+	Clock::time_point aNow = Clock::now();
+	gNextCheck = aNow;
+	gRetryAt = aNow;
+	gNextRemoteCheck = aNow + REMOTE_INTERVAL;
+}
+
 }
 
 void Init()
 {
-	fs::path aConfigPath = Sexy::PathFromU8(Sexy::GetAppDataPath("cloudsave.ini"));
 	CloudSync::Config aConfig;
-	if (!CloudSync::LoadConfig(aConfigPath, aConfig))
-	{
-		CloudSync::WriteConfigTemplate(aConfigPath);
+	if (!CloudSync::LoadConfig(ConfigPath(), aConfig))
+		CloudSync::WriteConfigTemplate(ConfigPath());
+	StartEngine(aConfig);
+	if (!gEngine)
 		return;
-	}
-	if (!aConfig.mEnabled)
-		return;
-
-	CloudSync::GlobalInit();
-	gEngine = new CloudSync::Engine(aConfig, DataDir(), Sexy::PathFromU8(Sexy::GetAppDataPath(".")), DeviceName());
 
 	// The profiles are not loaded yet, so a newer cloud save can simply replace the files.
 	// Uploading waits for Update(), when the summary of the loaded profile is known.
@@ -251,10 +290,6 @@ void Init()
 	CloudSync::Result aResult = gEngine->Sync(gEngine->ReadLocal(), "", true, false);
 	LogResult("startup sync", aResult);
 	HandleResult(aResult, aResult == CloudSync::Result::OK ? Signature() : aSignature);
-
-	Clock::time_point aNow = Clock::now();
-	gNextCheck = aNow;
-	gNextRemoteCheck = aNow + REMOTE_INTERVAL;
 }
 
 void Update()
@@ -345,6 +380,49 @@ void ResolveConflict(bool theUseCloud)
 		// HandleResult() scheduled a retry, which will notice the conflict again
 		ShowMessage("CLOUD SAVE", std::format("The cloud could not be reached, nothing was changed.\n\n{}", gEngine->GetLastError()));
 	}
+}
+
+CloudSync::Config GetSettings()
+{
+	return gConfig;
+}
+
+bool ApplySettings(const CloudSync::Config& theConfig)
+{
+	if (!CloudSync::WriteConfig(ConfigPath(), theConfig))
+		return false;
+
+	// read back, so the engine sees exactly what the next start will
+	CloudSync::Config aConfig;
+	CloudSync::LoadConfig(ConfigPath(), aConfig);
+	StartEngine(aConfig);
+	return true;
+}
+
+CloudSync::Result SyncNow()
+{
+	if (!gEngine)
+		return CloudSync::Result::DISABLED;
+
+	JoinWorker();
+	gPending = Pending::NONE;
+	gLawnApp->WriteCurrentUserConfig();
+	std::string aBefore = Signature();
+	CloudSync::Result aResult = gEngine->Sync(gEngine->ReadLocal(), Summary(), true);
+	LogResult("sync now", aResult);
+	std::string anAfter = Signature();
+	HandleResult(aResult, aResult == CloudSync::Result::OK ? anAfter : aBefore);
+	if (aResult == CloudSync::Result::OK && anAfter != aBefore)
+	{
+		ReloadProfiles();
+		gStatus = std::format("Loaded the cloud save at {}.", NowText());
+	}
+	return aResult;
+}
+
+std::string StatusText()
+{
+	return gStatus;
 }
 
 void Shutdown()

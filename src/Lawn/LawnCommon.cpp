@@ -136,12 +136,17 @@ void LawnEditWidget::KeyText(std::string_view theText)
 	EditWidget::KeyText(aText);
 }
 
+void StyleEditWidget(EditWidget* theEditWidget)
+{
+	theEditWidget->SetFont(Sexy::FONT_BRIANNETOD16);
+	theEditWidget->SetColors(gLawnEditWidgetColors);
+	theEditWidget->mBlinkDelay = 14;
+}
+
 std::unique_ptr<LawnEditWidget> CreateEditWidget(int theId, EditListener* theListener, Dialog* theDialog)
 {
 	auto aEditWidget = std::make_unique<LawnEditWidget>(theId, theListener, theDialog);
-	aEditWidget->SetFont(Sexy::FONT_BRIANNETOD16);
-	aEditWidget->SetColors(gLawnEditWidgetColors);
-	aEditWidget->mBlinkDelay = 14;
+	StyleEditWidget(aEditWidget.get());
 
 	return aEditWidget;
 }
