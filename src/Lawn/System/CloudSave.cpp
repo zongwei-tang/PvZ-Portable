@@ -226,6 +226,19 @@ bool AtSafePoint()
 		gLawnApp->mBoard == nullptr && gLawnApp->GetDialogCount() == 0;
 }
 
+// Pops up as the player arrives on the main menu, so a key still held from before must not pick a side:
+// only a click on one of its buttons answers it.
+class ConflictDialog : public LawnDialog
+{
+public:
+	explicit ConflictDialog(const std::string& theLines) :
+		LawnDialog(gLawnApp, Dialogs::DIALOG_CLOUD_SAVE_CONFLICT, true, "CLOUD SAVE CONFLICT", theLines, "", Sexy::Dialog::BUTTONS_YES_NO)
+	{
+	}
+
+	void KeyDown([[maybe_unused]] Sexy::KeyCode theKey) override {}
+};
+
 void AskAboutConflict()
 {
 	const CloudSync::ConflictInfo& aConflict = gEngine->GetConflict();
@@ -237,8 +250,10 @@ void AskAboutConflict()
 		FormatTime(aConflict.mLocalTime), Summary(),
 		FormatTime(aConflict.mRemote.mTime), aConflict.mRemote.mDevice, aConflict.mRemote.mSummary);
 
-	LawnDialog* aDialog = static_cast<LawnDialog*>(gLawnApp->DoDialog(
-		Dialogs::DIALOG_CLOUD_SAVE_CONFLICT, true, "CLOUD SAVE CONFLICT", aLines, "", Sexy::Dialog::BUTTONS_YES_NO));
+	gLawnApp->KillDialog(Dialogs::DIALOG_CLOUD_SAVE_CONFLICT);
+	ConflictDialog* aDialog = new ConflictDialog(aLines);
+	LawnApp::CenterDialog(aDialog, aDialog->mWidth, aDialog->mHeight);
+	gLawnApp->AddDialog(Dialogs::DIALOG_CLOUD_SAVE_CONFLICT, aDialog);
 	if (aDialog->mLawnYesButton)
 		aDialog->mLawnYesButton->mLabel = "Use Cloud";
 	if (aDialog->mLawnNoButton)

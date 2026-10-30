@@ -336,7 +336,7 @@ How syncing works:
 - At start the game downloads newer saves from the cloud before loading the profiles.
 - When saves change, they are uploaded in the background a few seconds later, and once more when the game exits. Every 5 minutes the game also checks the cloud for saves from other devices; those are loaded the next time the main menu is idle.
 - The folder is synced as a whole, never file by file, because profile ids differ between devices.
-- If the saves changed both on this device and in the cloud since the last sync, the main menu asks which copy to keep. The other copy is backed up to `cloudsave-backup/` in the per-user data folder.
+- If the saves changed both on this device and in the cloud since the last sync, the main menu asks which copy to keep (click a button; the keyboard is ignored there so a stray key cannot decide). The other copy is backed up to `cloudsave-backup/` in the per-user data folder.
 - Without a connection the game runs normally and retries later.
 - Server files: `manifest.txt` is the committed state and `files/` holds the save files. Do not edit them by hand.
 
