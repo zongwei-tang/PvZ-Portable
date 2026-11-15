@@ -2320,6 +2320,22 @@ void TestOneDriveSync()
 	CHECK_EQ(a.Sync(), Result::OK);
 	CHECK(LoadToken(a.mState, Provider::ONEDRIVE, aSaved));
 	CHECK_EQ(aSaved.mRefresh, "m-new-sign-in");
+
+	// a refresh token that could not be saved is saved with the next refresh
+	a.SignIn(Provider::ONEDRIVE, aServer.IssueRefresh(), "drive-42/approot-id");
+	a.Start(OneDriveConfig(), MakeOneDriveStore(OneDriveConfig(), a.mState, LinkTo(aServer)));
+	fs::path aBlocked = TokenPath(a.mState, Provider::ONEDRIVE);
+	aBlocked += ".cloudtmp";
+	fs::create_directories(aBlocked);	// where the token file is written first: the next save fails
+	CHECK_EQ(a.Sync(), Result::OK);
+	CHECK(LoadToken(a.mState, Provider::ONEDRIVE, aSaved));
+	CHECK(!aServer.mRefreshTokens.contains(aSaved.mRefresh));	// the one used up; the new one is only in memory
+	fs::remove(aBlocked);
+	aServer.mAccessTokens.clear();	// so the next request needs another refresh
+	CHECK_EQ(a.Sync(), Result::OK);
+	CHECK(LoadToken(a.mState, Provider::ONEDRIVE, aSaved));
+	CHECK(aServer.mRefreshTokens.contains(aSaved.mRefresh));
+	CHECK_EQ(aSaved.mClient, "onedrive-client");
 }
 
 void TestOneDriveConflicts()

@@ -480,6 +480,9 @@ bool CloudSaveDialog::Apply(bool theForSignIn)
 		return false;
 	}
 	mSavedForSignIn = theForSignIn;
+	// a sign-in counts only with the client ID it was made with, which these settings may have changed
+	mSignedIn = CloudSave::IsSignedIn(mProvider);
+	UpdateButtons();
 	return true;
 }
 

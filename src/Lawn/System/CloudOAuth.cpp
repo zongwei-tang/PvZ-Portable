@@ -230,6 +230,7 @@ class OAuthSession
 	fs::path				mStateDir;
 	Transport&				mHttp;
 	Token					mToken;
+	Token					mOnFile;		// what the token file held when this session last read or wrote it
 	bool					mSignedIn = false;
 	std::string				mAccess;
 	Clock::time_point		mExpiry;
@@ -272,17 +273,18 @@ class OAuthSession
 
 		// Microsoft hands out a new refresh token with every refresh (the old one keeps working for a while). A file
 		// from before the client ID was kept learns it from the first refresh that this client got through with.
+		// The file is replaced only while it still holds what this session found or put there, so never over a
+		// sign-in made since or a sign-out; a save that failed is made with the next refresh.
 		Token aToken = mToken;
 		std::string aRefresh = aJson.Str("refresh_token");
 		if (!aRefresh.empty())
 			aToken.mRefresh = aRefresh;
 		if (aToken.mClient.empty())
 			aToken.mClient = aClient.mId;
-		if (aToken.mRefresh != mToken.mRefresh || aToken.mClient != mToken.mClient)
-		{
-			ReplaceToken(mStateDir, mConfig.mProvider, mToken.mRefresh, aToken);	// not over a sign-in made since
-			mToken = aToken;
-		}
+		if ((aToken.mRefresh != mOnFile.mRefresh || aToken.mClient != mOnFile.mClient) &&
+			ReplaceToken(mStateDir, mConfig.mProvider, mOnFile.mRefresh, aToken))
+			mOnFile = aToken;
+		mToken = aToken;
 		return Result::OK;
 	}
 
@@ -291,6 +293,7 @@ public:
 		mConfig(theConfig), mStateDir(std::move(theStateDir)), mHttp(theHttp)
 	{
 		mSignedIn = LoadTokenFor(mStateDir, mConfig, mToken);
+		mOnFile = mToken;
 	}
 
 	const Token&		GetToken() const { return mToken; }
