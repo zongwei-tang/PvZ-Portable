@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <format>
+#include <mutex>
 #include <thread>
 #include <SDL.h>
 #ifndef _WIN32
@@ -65,9 +66,27 @@ Clock::time_point	gNextCheck;
 Clock::time_point	gNextRemoteCheck;
 Clock::time_point	gRetryAt;
 
+// Browser sign-in, on its own thread. The thread only fills in gSignIn and the results; joining it, saving the
+// sign-in and restarting the engine happen on the main thread (FinishSignIn).
+std::thread*						gSignInThread = nullptr;
+std::atomic<bool>					gSignInCancel{ false };
+std::atomic<bool>					gSignInDone{ false };
+std::mutex							gSignInMutex;
+SignInState							gSignIn;				// guarded by gSignInMutex, like the three below
+CloudSync::Result					gSignInResult = CloudSync::Result::OK;
+CloudSync::Token					gSignInToken;
+std::string							gSignInError;
+int									gCodeSerial = 0;
+
 fs::path DataDir()
 {
 	return Sexy::PathFromU8(Sexy::GetAppDataPath("userdata"));
+}
+
+// sync state, sign-ins and backups
+fs::path StateDir()
+{
+	return Sexy::PathFromU8(Sexy::GetAppDataPath("."));
 }
 
 std::string DeviceName()
@@ -279,13 +298,79 @@ void StartEngine(const CloudSync::Config& theConfig)
 	gStatus = theConfig.mEnabled ? "Not synced yet." : "Cloud save is off.";
 	if (!theConfig.mEnabled)
 		return;
+	if (CloudSync::IsOAuth(theConfig.mProvider) && !IsSignedIn(theConfig.mProvider))
+	{
+		gStatus = std::format("Sign in to {} to start syncing.", CloudSync::ProviderName(theConfig.mProvider));
+		return;
+	}
 
 	CloudSync::GlobalInit();
-	gEngine = new CloudSync::Engine(theConfig, DataDir(), Sexy::PathFromU8(Sexy::GetAppDataPath(".")), DeviceName());
+	gEngine = new CloudSync::Engine(theConfig, DataDir(), StateDir(), DeviceName());
 	Clock::time_point aNow = Clock::now();
 	gNextCheck = aNow;
 	gRetryAt = aNow;
 	gNextRemoteCheck = aNow + REMOTE_INTERVAL;
+}
+
+void StopSignIn()
+{
+	if (gSignInThread == nullptr)
+		return;
+	gSignInCancel = true;
+	gSignInThread->join();
+	delete gSignInThread;
+	gSignInThread = nullptr;
+}
+
+void FinishSignIn()
+{
+	if (gSignInThread == nullptr || !gSignInDone)
+		return;
+	gSignInThread->join();
+	delete gSignInThread;
+	gSignInThread = nullptr;
+
+	CloudSync::Result aResult;
+	CloudSync::Token aToken;
+	std::string anError;
+	CloudSync::Provider aProvider;
+	{
+		std::lock_guard aLock(gSignInMutex);
+		aResult = gSignInResult;
+		aToken = gSignInToken;
+		anError = gSignInError;
+		aProvider = gSignIn.mProvider;
+	}
+
+	SignInState::Phase aPhase = SignInState::Phase::FAILED;
+	std::string aMessage;
+	if (gSignInCancel)
+	{
+		aPhase = SignInState::Phase::IDLE;
+		aMessage = "Sign-in stopped.";
+	}
+	else if (aResult != CloudSync::Result::OK)
+	{
+		PvzpLogLn("cloud save: signing in to {} {}: {}", CloudSync::ProviderName(aProvider), CloudSync::ResultName(aResult), anError);
+		aMessage = std::format("Sign-in failed: {}", anError);
+	}
+	else
+	{
+		JoinWorker();	// the engine must not refresh the old sign-in while it is replaced
+		if (!CloudSync::SaveToken(StateDir(), aProvider, aToken))
+			aMessage = "Could not save the sign-in.";
+		else
+		{
+			PvzpLogLn("cloud save: signed in to {}", CloudSync::ProviderName(aProvider));
+			StartEngine(gConfig);
+			aPhase = SignInState::Phase::DONE;
+			aMessage = AccountText(aProvider);
+		}
+	}
+
+	std::lock_guard aLock(gSignInMutex);
+	gSignIn.mPhase = aPhase;
+	gSignIn.mMessage = aMessage;
 }
 
 }
@@ -309,6 +394,7 @@ void Init()
 
 void Update()
 {
+	FinishSignIn();
 	if (!gEngine)
 		return;
 
@@ -442,6 +528,7 @@ std::string StatusText()
 
 void Shutdown()
 {
+	StopSignIn();
 	if (!gEngine)
 		return;
 
@@ -455,6 +542,106 @@ void Shutdown()
 	}
 	delete gEngine;
 	gEngine = nullptr;
+}
+
+bool StartSignIn(CloudSync::Provider theProvider)
+{
+	FinishSignIn();
+	if (gSignInThread || !CloudSync::IsOAuth(theProvider))
+		return false;
+
+	CloudSync::Config aConfig = gConfig;
+	aConfig.mProvider = theProvider;
+	CloudSync::GlobalInit();
+	gSignInCancel = false;
+	gSignInDone = false;
+	{
+		std::lock_guard aLock(gSignInMutex);
+		int aSerial = gSignIn.mCodeSerial;
+		gSignIn = SignInState();
+		gSignIn.mPhase = SignInState::Phase::STARTING;
+		gSignIn.mProvider = theProvider;
+		gSignIn.mMessage = std::format("Contacting {}...", CloudSync::ProviderName(theProvider));
+		gSignIn.mCodeSerial = aSerial;
+	}
+
+	gSignInThread = new std::thread([aConfig]()
+	{
+		std::unique_ptr<CloudSync::Transport> aHttp = CloudSync::MakeCurlTransport();
+		CloudSync::Token aToken;
+		std::string anError;
+		CloudSync::Result aResult = CloudSync::DeviceSignIn(*aHttp, aConfig,
+			[](const CloudSync::DeviceCode& theCode)
+			{
+				std::lock_guard aLock(gSignInMutex);
+				if (gSignInCancel)
+					return;		// stopped while the code was on its way: it must not open the browser any more
+				gSignIn.mPhase = SignInState::Phase::WAITING;
+				gSignIn.mUserCode = theCode.mUserCode;
+				gSignIn.mUrl = theCode.mUrl;
+				gSignIn.mMessage = "Waiting for you to sign in...";
+				gSignIn.mCodeSerial = ++gCodeSerial;
+			},
+			[](int theSeconds)
+			{
+				for (int i = 0; i < theSeconds * 10 && !gSignInCancel; i++)
+					std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				return !gSignInCancel;
+			},
+			aToken, anError);
+		{
+			std::lock_guard aLock(gSignInMutex);
+			gSignInResult = aResult;
+			gSignInToken = aToken;
+			gSignInError = anError;
+		}
+		gSignInDone = true;
+	});
+	return true;
+}
+
+void CancelSignIn()
+{
+	// The thread notices within a tenth of a second, or after the request it is waiting for, and Update() joins it.
+	// Until then StartSignIn() refuses to start another one.
+	if (gSignInThread == nullptr || gSignInDone)
+		return;
+	gSignInCancel = true;
+	std::lock_guard aLock(gSignInMutex);
+	gSignIn.mPhase = SignInState::Phase::IDLE;
+	gSignIn.mMessage = "Sign-in stopped.";
+}
+
+SignInState GetSignIn()
+{
+	FinishSignIn();
+	std::lock_guard aLock(gSignInMutex);
+	return gSignIn;
+}
+
+bool IsSignedIn(CloudSync::Provider theProvider)
+{
+	CloudSync::Token aToken;
+	return CloudSync::IsOAuth(theProvider) && CloudSync::LoadToken(StateDir(), theProvider, aToken);
+}
+
+std::string AccountText(CloudSync::Provider theProvider)
+{
+	const char* aName = CloudSync::ProviderName(theProvider);
+	CloudSync::Token aToken;
+	if (!CloudSync::IsOAuth(theProvider) || !CloudSync::LoadToken(StateDir(), theProvider, aToken))
+		return std::format("Not signed in to {}.", aName);
+	if (aToken.mAccountName.empty())
+		return std::format("Signed in to {}.", aName);
+	return std::format("Signed in to {} as {}.", aName, aToken.mAccountName);
+}
+
+void SignOut(CloudSync::Provider theProvider)
+{
+	JoinWorker();
+	CloudSync::DeleteToken(StateDir(), theProvider);
+	PvzpLogLn("cloud save: signed out of {}", CloudSync::ProviderName(theProvider));
+	StartEngine(gConfig);
 }
 
 }

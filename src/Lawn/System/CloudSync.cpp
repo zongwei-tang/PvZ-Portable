@@ -18,6 +18,17 @@
 #include <system_error>
 #include <curl/curl.h>
 
+// OAuth clients this build signs in with; cloudsave.ini can name others (see CMakeLists.txt and the README)
+#ifndef PVZP_GOOGLE_CLIENT_ID
+#define PVZP_GOOGLE_CLIENT_ID ""
+#endif
+#ifndef PVZP_GOOGLE_CLIENT_SECRET
+#define PVZP_GOOGLE_CLIENT_SECRET ""
+#endif
+#ifndef PVZP_ONEDRIVE_CLIENT_ID
+#define PVZP_ONEDRIVE_CLIENT_ID ""
+#endif
+
 namespace fs = std::filesystem;
 
 namespace CloudSync
@@ -27,7 +38,7 @@ namespace
 {
 
 constexpr std::string_view MANIFEST_HEADER = "PVZP-CLOUDSAVE 1";
-constexpr const char* MANIFEST_NAME = "manifest.txt";
+constexpr std::string_view TOKEN_HEADER = "PVZP-CLOUDSAVE-TOKEN 1";
 constexpr const char* STATE_NAME = "cloudsave-state.txt";
 constexpr const char* BACKUP_DIR = "cloudsave-backup";
 
@@ -39,6 +50,12 @@ std::string_view Trim(std::string_view theText)
 		return {};
 	size_t anEnd = theText.find_last_not_of(aSpace);
 	return theText.substr(aStart, anEnd - aStart + 1);
+}
+
+// Values are single lines; a stray newline would start a new key.
+std::string OneLine(std::string_view theValue)
+{
+	return std::string(Trim(theValue.substr(0, theValue.find_first_of("\r\n"))));
 }
 
 bool ReadFile(const fs::path& thePath, std::string& theData)
@@ -62,14 +79,17 @@ bool WriteFile(const fs::path& thePath, std::string_view theData)
 	return !aFile.fail();
 }
 
-// Writes next to the target first so a crash never leaves a half-written save behind.
-bool WriteFileAtomic(const fs::path& thePath, std::string_view theData)
+// Writes next to the target first so a crash never leaves a half-written file behind. thePrivate keeps
+// files holding a password or sign-in readable by the owner only.
+bool WriteFileAtomic(const fs::path& thePath, std::string_view theData, bool thePrivate = false)
 {
 	fs::path aTemp = thePath;
 	aTemp += ".cloudtmp";
 	if (!WriteFile(aTemp, theData))
 		return false;
 	std::error_code anError;
+	if (thePrivate)
+		fs::permissions(aTemp, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, anError);
 	fs::rename(aTemp, thePath, anError);
 	if (anError)
 	{
@@ -84,10 +104,64 @@ int64_t Now()
 	return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
-std::string Escape(std::string_view theSegment)
+bool IsSuccess(long theStatus)
+{
+	return theStatus >= 200 && theStatus < 300;
+}
+
+// "a/b c" -> "a/b%20c/": each segment escaped, empty segments dropped, with a trailing slash
+std::string FolderPath(std::string_view theFolder)
+{
+	std::string aPath;
+	while (!theFolder.empty())
+	{
+		size_t aSlash = theFolder.find('/');
+		std::string_view aSegment = theFolder.substr(0, aSlash);
+		if (!aSegment.empty())
+			aPath += UrlEscape(aSegment) + '/';
+		theFolder = aSlash == std::string_view::npos ? std::string_view() : theFolder.substr(aSlash + 1);
+	}
+	return aPath;
+}
+
+std::string BlobPath(const std::string& theName, uint64_t theHash)
+{
+	return std::format("files/{}.{:016x}", theName, theHash);
+}
+
+}
+
+const char* ProviderKey(Provider theProvider)
+{
+	switch (theProvider)
+	{
+	case Provider::WEBDAV:			return "webdav";
+	case Provider::GOOGLE_DRIVE:	return "google";
+	case Provider::ONEDRIVE:		return "onedrive";
+	}
+	return "webdav";
+}
+
+const char* ProviderName(Provider theProvider)
+{
+	switch (theProvider)
+	{
+	case Provider::WEBDAV:			return "WebDAV";
+	case Provider::GOOGLE_DRIVE:	return "Google Drive";
+	case Provider::ONEDRIVE:		return "OneDrive";
+	}
+	return "WebDAV";
+}
+
+bool IsOAuth(Provider theProvider)
+{
+	return theProvider == Provider::GOOGLE_DRIVE || theProvider == Provider::ONEDRIVE;
+}
+
+std::string UrlEscape(std::string_view theText)
 {
 	std::string anOut;
-	for (unsigned char c : theSegment)
+	for (unsigned char c : theText)
 	{
 		if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~')
 			anOut += static_cast<char>(c);
@@ -97,11 +171,24 @@ std::string Escape(std::string_view theSegment)
 	return anOut;
 }
 
-bool IsSuccess(long theStatus)
+std::string UrlEscapePath(std::string_view thePath)
 {
-	return theStatus >= 200 && theStatus < 300;
+	std::string aPath = FolderPath(thePath);
+	if (!aPath.empty() && thePath.back() != '/')
+		aPath.pop_back();
+	return aPath;
 }
 
+std::string DescribePath(const std::string& thePath)
+{
+	if (thePath == MANIFEST_PATH)
+		return "the cloud manifest";
+	// files/<name>.<hash> -> <name>
+	std::string aName = thePath.starts_with("files/") ? thePath.substr(6) : thePath;
+	size_t aDot = aName.rfind('.');
+	if (aDot != std::string::npos && aName.size() - aDot == 17)
+		aName.resize(aDot);
+	return aName;
 }
 
 bool LoadConfig(const fs::path& thePath, Config& theConfig)
@@ -125,6 +212,14 @@ bool LoadConfig(const fs::path& thePath, Config& theConfig)
 		std::string aValue(Trim(aView.substr(anEquals + 1)));
 		if (aKey == "enabled")
 			theConfig.mEnabled = aValue == "1" || aValue == "true" || aValue == "yes" || aValue == "on";
+		else if (aKey == "provider")
+		{
+			for (int i = 0; i < NUM_PROVIDERS; i++)
+			{
+				if (aValue == ProviderKey(static_cast<Provider>(i)))
+					theConfig.mProvider = static_cast<Provider>(i);
+			}
+		}
 		else if (aKey == "url")
 			theConfig.mUrl = aValue;
 		else if (aKey == "username")
@@ -133,35 +228,78 @@ bool LoadConfig(const fs::path& thePath, Config& theConfig)
 			theConfig.mPassword = aValue;
 		else if (aKey == "folder")
 			theConfig.mFolder = aValue;
+		else if (aKey == "google_client_id")
+			theConfig.mGoogleClientId = aValue;
+		else if (aKey == "google_client_secret")
+			theConfig.mGoogleClientSecret = aValue;
+		else if (aKey == "onedrive_client_id")
+			theConfig.mOneDriveClientId = aValue;
 	}
 
-	if (theConfig.mUrl.empty())
-		theConfig.mEnabled = false;
-	else if (theConfig.mUrl.back() != '/')
+	if (!theConfig.mUrl.empty() && theConfig.mUrl.back() != '/')
 		theConfig.mUrl += '/';
+	if (theConfig.mProvider == Provider::WEBDAV && theConfig.mUrl.empty())
+		theConfig.mEnabled = false;
 	return true;
 }
 
 bool WriteConfig(const fs::path& thePath, const Config& theConfig)
 {
-	// values are single lines; a stray newline would start a new key
-	auto aLine = [](std::string_view theValue) { return std::string(Trim(theValue.substr(0, theValue.find_first_of("\r\n")))); };
 	return WriteFileAtomic(thePath, std::format(
-		"# PvZ-Portable cloud save over WebDAV (Nextcloud, ownCloud, Jianguoyun, Synology, Apache mod_dav, ...).\n"
-		"# Edit this in the game (Options on the main menu, Cloud Save), or set enabled=1 here and restart the game.\n"
-		"# url is the WebDAV root of your account, e.g. https://cloud.example.com/remote.php/dav/files/alice/\n"
-		"# The password is stored here as plain text: prefer an app password over your account password.\n"
+		"# PvZ-Portable cloud save. Edit this in the game (Options on the main menu, Cloud Save), or here and restart the game.\n"
+		"# provider is webdav, google or onedrive.\n"
+		"#\n"
+		"# WebDAV (Nextcloud, ownCloud, Jianguoyun, Synology, Apache mod_dav, ...): url is the WebDAV root of your account,\n"
+		"# e.g. https://cloud.example.com/remote.php/dav/files/alice/ . The password is stored here as plain text: prefer an\n"
+		"# app password over your account password.\n"
+		"#\n"
+		"# Google Drive and OneDrive sign in through the browser, from the game. A build made without client IDs of its own\n"
+		"# needs them here (see the README): google_client_id and google_client_secret of a Google OAuth client of the type\n"
+		"# \"TVs and Limited Input devices\", onedrive_client_id of a Microsoft app registration that allows public client flows.\n"
 		"enabled={}\n"
+		"provider={}\n"
 		"url={}\n"
 		"username={}\n"
 		"password={}\n"
-		"folder={}\n",
-		theConfig.mEnabled ? 1 : 0, aLine(theConfig.mUrl), aLine(theConfig.mUsername), aLine(theConfig.mPassword), aLine(theConfig.mFolder)));
+		"folder={}\n"
+		"google_client_id={}\n"
+		"google_client_secret={}\n"
+		"onedrive_client_id={}\n",
+		theConfig.mEnabled ? 1 : 0, ProviderKey(theConfig.mProvider), OneLine(theConfig.mUrl), OneLine(theConfig.mUsername),
+		OneLine(theConfig.mPassword), OneLine(theConfig.mFolder), OneLine(theConfig.mGoogleClientId),
+		OneLine(theConfig.mGoogleClientSecret), OneLine(theConfig.mOneDriveClientId)), true);
 }
 
 bool WriteConfigTemplate(const fs::path& thePath)
 {
 	return WriteConfig(thePath, Config());
+}
+
+std::string GoogleClientId(const Config& theConfig)
+{
+	return theConfig.mGoogleClientId.empty() ? PVZP_GOOGLE_CLIENT_ID : theConfig.mGoogleClientId;
+}
+
+std::string GoogleClientSecret(const Config& theConfig)
+{
+	// the secret belongs to the client: a built-in secret is no use with a client ID from cloudsave.ini
+	return theConfig.mGoogleClientId.empty() ? PVZP_GOOGLE_CLIENT_SECRET : theConfig.mGoogleClientSecret;
+}
+
+std::string OneDriveClientId(const Config& theConfig)
+{
+	return theConfig.mOneDriveClientId.empty() ? PVZP_ONEDRIVE_CLIENT_ID : theConfig.mOneDriveClientId;
+}
+
+bool HasBuiltInClientId(Provider theProvider)
+{
+	switch (theProvider)
+	{
+	case Provider::GOOGLE_DRIVE:	return std::string_view(PVZP_GOOGLE_CLIENT_ID).size() > 0;
+	case Provider::ONEDRIVE:		return std::string_view(PVZP_ONEDRIVE_CLIENT_ID).size() > 0;
+	case Provider::WEBDAV:			return false;
+	}
+	return false;
 }
 
 bool IsSyncedFileName(std::string_view theName)
@@ -251,6 +389,12 @@ FileMap DescribeSnapshot(const Snapshot& theSnapshot)
 	return aFiles;
 }
 
+bool SameCommit(const Manifest& theA, const Manifest& theB)
+{
+	// not just the revision: two devices racing on a server without conditional writes can both commit the same one
+	return theA.mRev == theB.mRev && theA.mTime == theB.mTime && theA.mDevice == theB.mDevice && theA.mFiles == theB.mFiles;
+}
+
 Action Decide(const Manifest* theBase, const FileMap& theLocal, const Manifest* theRemote)
 {
 	if (theRemote == nullptr || (theBase == nullptr && theRemote->mFiles.empty()))
@@ -261,7 +405,12 @@ Action Decide(const Manifest* theBase, const FileMap& theLocal, const Manifest* 
 		return theLocal.empty() ? Action::PULL : Action::CONFLICT;
 
 	bool aLocalChanged = theLocal != theBase->mFiles;
-	bool aRemoteChanged = theRemote->mRev != theBase->mRev;
+	bool aRemoteChanged = !SameCommit(*theRemote, *theBase);
+	// Every commit made on top of the base has a higher revision. Another one with the same or a lower revision was
+	// made at the same time as the base, on a server that could not turn one of them down, or is an older copy: the
+	// cloud lost what this device has, so ask instead of loading over it.
+	if (aRemoteChanged && theRemote->mRev <= theBase->mRev)
+		return Action::CONFLICT;
 	if (aLocalChanged && aRemoteChanged)
 		return Action::CONFLICT;
 	if (aLocalChanged)
@@ -296,16 +445,21 @@ void GlobalInit()
 	}
 }
 
+Result Store::Fail(Result theResult, std::string theError)
+{
+	mError = std::move(theError);
+	return theResult;
+}
+
 namespace
 {
 
 class CurlTransport : public Transport
 {
-	Config	mConfig;
 	CURL*	mCurl = nullptr;
 
 public:
-	CurlTransport(const Config& theConfig) : mConfig(theConfig) { mCurl = curl_easy_init(); }
+	CurlTransport() { mCurl = curl_easy_init(); }
 	~CurlTransport() override { if (mCurl) curl_easy_cleanup(mCurl); }
 
 	static size_t OnBody(char* theData, size_t theSize, size_t theCount, void* theUser)
@@ -317,18 +471,21 @@ public:
 	static size_t OnHeader(char* theData, size_t theSize, size_t theCount, void* theUser)
 	{
 		std::string_view aLine(theData, theSize * theCount);
+		std::string& anETag = *static_cast<std::string*>(theUser);
+		if (aLine.starts_with("HTTP/"))
+			anETag.clear();		// a new response, after a redirect
 		size_t aColon = aLine.find(':');
 		if (aColon != std::string_view::npos)
 		{
 			std::string aKey(aLine.substr(0, aColon));
 			std::transform(aKey.begin(), aKey.end(), aKey.begin(), [](unsigned char c) { return std::tolower(c); });
 			if (aKey == "etag")
-				*static_cast<std::string*>(theUser) = std::string(Trim(aLine.substr(aColon + 1)));
+				anETag = std::string(Trim(aLine.substr(aColon + 1)));
 		}
 		return theSize * theCount;
 	}
 
-	HttpResponse Request(const char* theMethod, const std::string& theUrl, const std::string* theBody, const std::vector<std::string>& theHeaders) override
+	HttpResponse Request(const HttpRequest& theRequest) override
 	{
 		HttpResponse aResponse;
 		if (mCurl == nullptr)
@@ -338,7 +495,7 @@ public:
 		}
 
 		curl_easy_reset(mCurl);
-		curl_easy_setopt(mCurl, CURLOPT_URL, theUrl.c_str());
+		curl_easy_setopt(mCurl, CURLOPT_URL, theRequest.mUrl.c_str());
 		curl_easy_setopt(mCurl, CURLOPT_USERAGENT, "PvZ-Portable cloud save");
 		curl_easy_setopt(mCurl, CURLOPT_NOSIGNAL, 1L);
 		curl_easy_setopt(mCurl, CURLOPT_CONNECTTIMEOUT, 5L);
@@ -348,31 +505,52 @@ public:
 #else
 		curl_easy_setopt(mCurl, CURLOPT_PROTOCOLS, static_cast<long>(CURLPROTO_HTTP | CURLPROTO_HTTPS));
 #endif
-		if (!mConfig.mUsername.empty())
+		if (theRequest.mFollowRedirects)
+		{
+			// credentials are not passed on to another host (no CURLOPT_UNRESTRICTED_AUTH)
+			curl_easy_setopt(mCurl, CURLOPT_FOLLOWLOCATION, 1L);
+			curl_easy_setopt(mCurl, CURLOPT_MAXREDIRS, 5L);
+#if LIBCURL_VERSION_NUM >= 0x075500
+			curl_easy_setopt(mCurl, CURLOPT_REDIR_PROTOCOLS_STR, "https");
+#else
+			curl_easy_setopt(mCurl, CURLOPT_REDIR_PROTOCOLS, static_cast<long>(CURLPROTO_HTTPS));
+#endif
+		}
+
+		curl_slist* aHeaders = nullptr;
+		if (!theRequest.mUsername.empty())
 		{
 			curl_easy_setopt(mCurl, CURLOPT_HTTPAUTH, static_cast<long>(CURLAUTH_BASIC));
-			curl_easy_setopt(mCurl, CURLOPT_USERNAME, mConfig.mUsername.c_str());
-			curl_easy_setopt(mCurl, CURLOPT_PASSWORD, mConfig.mPassword.c_str());
+			curl_easy_setopt(mCurl, CURLOPT_USERNAME, theRequest.mUsername.c_str());
+			curl_easy_setopt(mCurl, CURLOPT_PASSWORD, theRequest.mPassword.c_str());
+		}
+		else if (!theRequest.mBearer.empty())
+		{
+#if LIBCURL_VERSION_NUM >= 0x073D00
+			curl_easy_setopt(mCurl, CURLOPT_HTTPAUTH, static_cast<long>(CURLAUTH_BEARER));
+			curl_easy_setopt(mCurl, CURLOPT_XOAUTH2_BEARER, theRequest.mBearer.c_str());
+#else
+			aHeaders = curl_slist_append(aHeaders, ("Authorization: Bearer " + theRequest.mBearer).c_str());
+#endif
 		}
 		curl_easy_setopt(mCurl, CURLOPT_WRITEFUNCTION, &CurlTransport::OnBody);
 		curl_easy_setopt(mCurl, CURLOPT_WRITEDATA, &aResponse.mBody);
 		curl_easy_setopt(mCurl, CURLOPT_HEADERFUNCTION, &CurlTransport::OnHeader);
 		curl_easy_setopt(mCurl, CURLOPT_HEADERDATA, &aResponse.mETag);
 
-		if (std::string_view(theMethod) == "GET")
+		if (theRequest.mMethod == "GET")
 			curl_easy_setopt(mCurl, CURLOPT_HTTPGET, 1L);
 		else
-			curl_easy_setopt(mCurl, CURLOPT_CUSTOMREQUEST, theMethod);
-		if (theBody)
+			curl_easy_setopt(mCurl, CURLOPT_CUSTOMREQUEST, theRequest.mMethod.c_str());
+		if (theRequest.mBody)
 		{
-			curl_easy_setopt(mCurl, CURLOPT_POSTFIELDS, theBody->data());
-			curl_easy_setopt(mCurl, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(theBody->size()));
+			curl_easy_setopt(mCurl, CURLOPT_POSTFIELDS, theRequest.mBody->data());
+			curl_easy_setopt(mCurl, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(theRequest.mBody->size()));
+			std::string aType = theRequest.mContentType.empty() ? "application/octet-stream" : theRequest.mContentType;
+			aHeaders = curl_slist_append(aHeaders, ("Content-Type: " + aType).c_str());
+			aHeaders = curl_slist_append(aHeaders, "Expect:");	// no 100-continue round trip
 		}
-
-		curl_slist* aHeaders = nullptr;
-		if (theBody)
-			aHeaders = curl_slist_append(aHeaders, "Content-Type: application/octet-stream");
-		for (const std::string& aHeader : theHeaders)
+		for (const std::string& aHeader : theRequest.mHeaders)
 			aHeaders = curl_slist_append(aHeaders, aHeader.c_str());
 		curl_easy_setopt(mCurl, CURLOPT_HTTPHEADER, aHeaders);
 
@@ -388,42 +566,196 @@ public:
 	}
 };
 
-}
-
-std::unique_ptr<Transport> MakeCurlTransport(const Config& theConfig)
+// <url>/<folder>/, with basic authentication and If-Match on the manifest.
+class WebDavStore : public Store
 {
-	return std::make_unique<CurlTransport>(theConfig);
-}
+	Config						mConfig;
+	std::unique_ptr<Transport>	mHttp;
+	bool						mFoldersReady = false;
 
-Engine::Engine(const Config& theConfig, fs::path theDataDir, fs::path theStateDir, std::string theDevice, std::unique_ptr<Transport> theTransport) :
-	mConfig(theConfig), mDataDir(std::move(theDataDir)), mStateDir(std::move(theStateDir)), mDevice(std::move(theDevice)),
-	mHttp(theTransport ? std::move(theTransport) : MakeCurlTransport(theConfig))
-{
-}
-
-std::string Engine::FolderPath() const
-{
-	std::string aPath;
-	std::string_view aFolder = mConfig.mFolder;
-	while (!aFolder.empty())
+	std::string Base() const
 	{
-		size_t aSlash = aFolder.find('/');
-		std::string_view aSegment = aFolder.substr(0, aSlash);
-		if (!aSegment.empty())
-			aPath += Escape(aSegment) + '/';
-		aFolder = aSlash == std::string_view::npos ? std::string_view() : aFolder.substr(aSlash + 1);
+		return mConfig.mUrl + FolderPath(mConfig.mFolder);
 	}
-	return aPath;
+
+	HttpResponse Send(const char* theMethod, const std::string& theUrl, const std::string* theBody = nullptr, std::vector<std::string> theHeaders = {})
+	{
+		HttpRequest aRequest;
+		aRequest.mMethod = theMethod;
+		aRequest.mUrl = theUrl;
+		aRequest.mBody = theBody;
+		aRequest.mHeaders = std::move(theHeaders);
+		aRequest.mUsername = mConfig.mUsername;
+		aRequest.mPassword = mConfig.mPassword;
+		return mHttp->Request(aRequest);
+	}
+
+	Result Check(const HttpResponse& theResponse, std::string_view theWhat)
+	{
+		if (theResponse.mStatus == 0)
+			return Fail(Result::OFFLINE, theResponse.mError);
+		if (theResponse.mStatus == 401 || theResponse.mStatus == 403)
+			return Fail(Result::FAILED, "the server rejected the username or password");
+		if (!IsSuccess(theResponse.mStatus))
+			return Fail(Result::FAILED, std::format("{} failed with HTTP {}", theWhat, theResponse.mStatus));
+		return Result::OK;
+	}
+
+public:
+	WebDavStore(const Config& theConfig, std::unique_ptr<Transport> theTransport) : mConfig(theConfig), mHttp(std::move(theTransport)) {}
+
+	// the same key the sync state was saved under before there were other providers
+	std::string Id() const override { return Base(); }
+
+	Result Get(const std::string& thePath, bool& theFound, std::string& theBody, std::string& theVersion) override
+	{
+		theFound = false;
+		HttpResponse aResponse = Send("GET", Base() + UrlEscapePath(thePath));
+		if (aResponse.mStatus == 404)
+			return Result::OK;
+		Result aResult = Check(aResponse, "downloading " + DescribePath(thePath));
+		if (aResult != Result::OK)
+			return aResult;
+		theFound = true;
+		theBody = std::move(aResponse.mBody);
+		theVersion = aResponse.mETag;
+		return Result::OK;
+	}
+
+	Result Put(const std::string& thePath, const std::string& theBody, Condition theCondition, const std::string& theVersion) override
+	{
+		std::vector<std::string> aHeaders;
+		if (theCondition == Condition::ABSENT)
+			aHeaders.push_back("If-None-Match: *");
+		else if (theCondition == Condition::VERSION && !theVersion.empty() && !theVersion.starts_with("W/"))	// a weak ETag never matches If-Match
+			aHeaders.push_back("If-Match: " + theVersion);
+
+		HttpResponse aResponse = Send("PUT", Base() + UrlEscapePath(thePath), &theBody, std::move(aHeaders));
+		if (aResponse.mStatus == 412)
+			return Fail(Result::CONFLICT, "another device saved to the cloud at the same time");
+		return Check(aResponse, "uploading " + DescribePath(thePath));
+	}
+
+	Result Delete(const std::string& thePath) override
+	{
+		HttpResponse aResponse = Send("DELETE", Base() + UrlEscapePath(thePath));
+		if (aResponse.mStatus == 404)
+			return Result::OK;
+		return Check(aResponse, "deleting " + DescribePath(thePath));
+	}
+
+	Result Prepare() override
+	{
+		if (mFoldersReady)
+			return Result::OK;
+
+		std::vector<std::string> aFolders;
+		std::string aPath = FolderPath(mConfig.mFolder);
+		for (size_t aSlash = aPath.find('/'); aSlash != std::string::npos; aSlash = aPath.find('/', aSlash + 1))
+			aFolders.push_back(aPath.substr(0, aSlash + 1));
+		aFolders.push_back(aPath + "files/");
+
+		for (const std::string& aFolder : aFolders)
+		{
+			// 405 means the collection already exists
+			HttpResponse aResponse = Send("MKCOL", mConfig.mUrl + aFolder);
+			if (aResponse.mStatus == 405)
+				continue;
+			Result aResult = Check(aResponse, "creating the cloud folder");
+			if (aResult != Result::OK)
+				return aResult;
+		}
+		mFoldersReady = true;
+		return Result::OK;
+	}
+};
+
 }
 
-std::string Engine::BlobPath(const std::string& theName, uint64_t theHash) const
+std::unique_ptr<Transport> MakeCurlTransport()
 {
-	return std::format("{}files/{}.{:016x}", FolderPath(), theName, theHash);
+	return std::make_unique<CurlTransport>();
+}
+
+std::unique_ptr<Store> MakeWebDavStore(const Config& theConfig, std::unique_ptr<Transport> theTransport)
+{
+	return std::make_unique<WebDavStore>(theConfig, std::move(theTransport));
+}
+
+std::unique_ptr<Store> MakeStore(const Config& theConfig, const fs::path& theStateDir, std::unique_ptr<Transport> theTransport)
+{
+	if (!theTransport)
+		theTransport = MakeCurlTransport();
+	switch (theConfig.mProvider)
+	{
+	case Provider::GOOGLE_DRIVE:	return MakeGoogleDriveStore(theConfig, theStateDir, std::move(theTransport));
+	case Provider::ONEDRIVE:		return MakeOneDriveStore(theConfig, theStateDir, std::move(theTransport));
+	case Provider::WEBDAV:			break;
+	}
+	return MakeWebDavStore(theConfig, std::move(theTransport));
+}
+
+fs::path TokenPath(const fs::path& theStateDir, Provider theProvider)
+{
+	return theStateDir / std::format("cloudsave-{}-token.txt", ProviderKey(theProvider));
+}
+
+bool LoadToken(const fs::path& theStateDir, Provider theProvider, Token& theToken)
+{
+	theToken = Token();
+	std::string aText;
+	if (!ReadFile(TokenPath(theStateDir, theProvider), aText))
+		return false;
+
+	std::istringstream aStream(aText);
+	std::string aLine;
+	if (!std::getline(aStream, aLine) || Trim(aLine) != TOKEN_HEADER)
+		return false;
+	while (std::getline(aStream, aLine))
+	{
+		std::string_view aView = Trim(aLine);
+		size_t aSpace = aView.find(' ');
+		std::string_view aKey = aView.substr(0, aSpace);
+		std::string aValue = aSpace == std::string_view::npos ? std::string() : std::string(Trim(aView.substr(aSpace + 1)));
+		if (aKey == "refresh")
+			theToken.mRefresh = aValue;
+		else if (aKey == "account")
+			theToken.mAccount = aValue;
+		else if (aKey == "name")
+			theToken.mAccountName = aValue;
+	}
+	return !theToken.mRefresh.empty();
+}
+
+bool SaveToken(const fs::path& theStateDir, Provider theProvider, const Token& theToken)
+{
+	std::error_code anError;
+	fs::create_directories(theStateDir, anError);
+	return WriteFileAtomic(TokenPath(theStateDir, theProvider), std::format("{}\naccount {}\nname {}\nrefresh {}\n",
+		TOKEN_HEADER, OneLine(theToken.mAccount), OneLine(theToken.mAccountName), OneLine(theToken.mRefresh)), true);
+}
+
+void DeleteToken(const fs::path& theStateDir, Provider theProvider)
+{
+	std::error_code anError;
+	fs::remove(TokenPath(theStateDir, theProvider), anError);
+}
+
+Engine::Engine(const Config& theConfig, fs::path theDataDir, fs::path theStateDir, std::string theDevice, std::unique_ptr<Store> theStore) :
+	mConfig(theConfig), mDataDir(std::move(theDataDir)), mStateDir(std::move(theStateDir)), mDevice(std::move(theDevice)),
+	mStore(theStore ? std::move(theStore) : MakeStore(theConfig, mStateDir))
+{
 }
 
 Result Engine::Fail(Result theResult, std::string theError)
 {
 	mLastError = std::move(theError);
+	return theResult;
+}
+
+Result Engine::StoreFailed(Result theResult)
+{
+	mLastError = mStore->GetError();
 	return theResult;
 }
 
@@ -463,12 +795,12 @@ int64_t Engine::LocalTime() const
 
 bool Engine::LoadBase(Manifest& theBase) const
 {
-	// The first line names the remote the base belongs to, so pointing the game at another server starts over.
+	// The first line names the cloud folder the base belongs to, so pointing the game at another one starts over.
 	std::string aText;
 	if (!ReadFile(mStateDir / STATE_NAME, aText))
 		return false;
 	size_t aNewline = aText.find('\n');
-	if (aNewline == std::string::npos || aText.substr(0, aNewline) != mConfig.mUrl + FolderPath())
+	if (aNewline == std::string::npos || aText.substr(0, aNewline) != mStore->Id())
 		return false;
 	return ParseManifest(std::string_view(aText).substr(aNewline + 1), theBase);
 }
@@ -477,7 +809,7 @@ void Engine::SaveBase(const Manifest& theBase) const
 {
 	std::error_code anError;
 	fs::create_directories(mStateDir, anError);
-	WriteFileAtomic(mStateDir / STATE_NAME, mConfig.mUrl + FolderPath() + '\n' + WriteManifest(theBase));
+	WriteFileAtomic(mStateDir / STATE_NAME, mStore->Id() + '\n' + WriteManifest(theBase));
 }
 
 void Engine::Backup(const Snapshot& theSnapshot, std::string_view theSide)
@@ -506,74 +838,44 @@ void Engine::Backup(const Snapshot& theSnapshot, std::string_view theSide)
 Result Engine::FetchRemote(Remote& theRemote)
 {
 	theRemote = Remote();
-	HttpResponse aResponse = mHttp->Request("GET", mConfig.mUrl + FolderPath() + MANIFEST_NAME, nullptr, {});
-	if (aResponse.mStatus == 0)
-		return Fail(Result::OFFLINE, aResponse.mError);
-	if (aResponse.mStatus == 404)
-		return Result::OK;
-	if (aResponse.mStatus == 401 || aResponse.mStatus == 403)
-		return Fail(Result::FAILED, "the server rejected the username or password");
-	if (!IsSuccess(aResponse.mStatus))
-		return Fail(Result::FAILED, std::format("reading the cloud manifest failed with HTTP {}", aResponse.mStatus));
-	if (!ParseManifest(aResponse.mBody, theRemote.mManifest))
-		return Fail(Result::FAILED, "the cloud manifest is damaged");
-
-	theRemote.mExists = true;
-	theRemote.mETag = aResponse.mETag;
-	return Result::OK;
-}
-
-Result Engine::EnsureFolders()
-{
-	if (mFoldersReady)
-		return Result::OK;
-
-	std::vector<std::string> aFolders;
-	std::string aPath = FolderPath();
-	for (size_t aSlash = aPath.find('/'); aSlash != std::string::npos; aSlash = aPath.find('/', aSlash + 1))
-		aFolders.push_back(aPath.substr(0, aSlash + 1));
-	aFolders.push_back(aPath + "files/");
-
-	for (const std::string& aFolder : aFolders)
-	{
-		// 405 means the collection already exists
-		HttpResponse aResponse = mHttp->Request("MKCOL", mConfig.mUrl + aFolder, nullptr, {});
-		if (aResponse.mStatus == 0)
-			return Fail(Result::OFFLINE, aResponse.mError);
-		if (!IsSuccess(aResponse.mStatus) && aResponse.mStatus != 405)
-			return Fail(Result::FAILED, std::format("creating the cloud folder failed with HTTP {}", aResponse.mStatus));
-	}
-	mFoldersReady = true;
-	return Result::OK;
-}
-
-Result Engine::Push(const Snapshot& theLocal, const std::string& theSummary, const Remote& theRemote)
-{
-	Result aResult = EnsureFolders();
+	bool aFound = false;
+	std::string aBody;
+	Result aResult = mStore->Get(MANIFEST_PATH, aFound, aBody, theRemote.mVersion);
 	if (aResult != Result::OK)
-		return aResult;
+		return StoreFailed(aResult);
+	if (!aFound)
+		return Result::OK;
+	if (!ParseManifest(aBody, theRemote.mManifest))
+		return Fail(Result::FAILED, "the cloud manifest is damaged");
+	theRemote.mExists = true;
+	return Result::OK;
+}
+
+Result Engine::Push(const Snapshot& theLocal, const std::string& theSummary, const Remote& theRemote, bool theUploadAll)
+{
+	Result aResult = mStore->Prepare();
+	if (aResult != Result::OK)
+		return StoreFailed(aResult);
 
 	FileMap aLocal = DescribeSnapshot(theLocal);
 	const FileMap& aRemoteFiles = theRemote.mManifest.mFiles;
 	for (const auto& [aName, anEntry] : aLocal)
 	{
 		auto anItr = aRemoteFiles.find(aName);
-		if (anItr != aRemoteFiles.end() && anItr->second == anEntry)
+		if (!theUploadAll && anItr != aRemoteFiles.end() && anItr->second == anEntry)
 			continue;	// that blob is already in the cloud
 
-		HttpResponse aResponse = mHttp->Request("PUT", mConfig.mUrl + BlobPath(aName, anEntry.mHash), &theLocal.at(aName), {});
-		if (aResponse.mStatus == 0)
-			return Fail(Result::OFFLINE, aResponse.mError);
-		if (!IsSuccess(aResponse.mStatus))
-			return Fail(Result::FAILED, std::format("uploading {} failed with HTTP {}", aName, aResponse.mStatus));
+		aResult = mStore->Put(BlobPath(aName, anEntry.mHash), theLocal.at(aName));
+		if (aResult != Result::OK)
+			return StoreFailed(aResult);
 	}
 
-	// Some servers ignore If-Match, so look once more right before committing.
+	// Not every server can write conditionally, so look once more right before committing.
 	Remote aLatest;
 	aResult = FetchRemote(aLatest);
 	if (aResult != Result::OK)
 		return aResult;
-	if (aLatest.mExists != theRemote.mExists || aLatest.mManifest.mRev != theRemote.mManifest.mRev)
+	if (aLatest.mExists != theRemote.mExists || (aLatest.mExists && !SameCommit(aLatest.mManifest, theRemote.mManifest)))
 	{
 		mConflict = ConflictInfo{ aLatest.mManifest, LocalTime() };
 		return Fail(Result::CONFLICT, "another device saved to the cloud at the same time");
@@ -588,25 +890,29 @@ Result Engine::Push(const Snapshot& theLocal, const std::string& theSummary, con
 	aManifest.mSummary = theSummary;
 	aManifest.mFiles = aLocal;
 
-	std::vector<std::string> aHeaders;
-	if (!theRemote.mExists)
-		aHeaders.push_back("If-None-Match: *");
-	else if (!aLatest.mETag.empty() && !aLatest.mETag.starts_with("W/"))	// a weak ETag never matches If-Match
-		aHeaders.push_back("If-Match: " + aLatest.mETag);
-
 	std::string aText = WriteManifest(aManifest);
-	HttpResponse aResponse = mHttp->Request("PUT", mConfig.mUrl + FolderPath() + MANIFEST_NAME, &aText, aHeaders);
-	if (aResponse.mStatus == 0)
-		return Fail(Result::OFFLINE, aResponse.mError);
-	if (aResponse.mStatus == 412)
+	for (int aTry = 0;; aTry++)
 	{
+		aResult = mStore->Put(MANIFEST_PATH, aText, aLatest.mExists ? Store::Condition::VERSION : Store::Condition::ABSENT, aLatest.mVersion);
+		if (aResult != Result::CONFLICT)
+			break;
+
 		Remote aWinner;
-		if (FetchRemote(aWinner) == Result::OK)
-			mConflict = ConflictInfo{ aWinner.mManifest, LocalTime() };
+		Result aFetched = FetchRemote(aWinner);
+		if (aFetched != Result::OK)
+			return aFetched;	// what is in the cloud now is not known: try again later rather than ask about it
+		// Still the same commit, only under a new version (OneDrive also changes the eTag of a file when something
+		// else than its content changes): commit on top of that once more.
+		if (aTry == 0 && aLatest.mExists && aWinner.mExists && SameCommit(aWinner.mManifest, aLatest.mManifest) && aWinner.mVersion != aLatest.mVersion)
+		{
+			aLatest = std::move(aWinner);
+			continue;
+		}
+		mConflict = ConflictInfo{ aWinner.mManifest, LocalTime() };
 		return Fail(Result::CONFLICT, "another device saved to the cloud at the same time");
 	}
-	if (!IsSuccess(aResponse.mStatus))
-		return Fail(Result::FAILED, std::format("writing the cloud manifest failed with HTTP {}", aResponse.mStatus));
+	if (aResult != Result::OK)
+		return StoreFailed(aResult);
 
 	SaveBase(aManifest);
 
@@ -615,12 +921,12 @@ Result Engine::Push(const Snapshot& theLocal, const std::string& theSummary, con
 	{
 		auto anItr = aLocal.find(aName);
 		if (anItr == aLocal.end() || anItr->second.mHash != anEntry.mHash)
-			mHttp->Request("DELETE", mConfig.mUrl + BlobPath(aName, anEntry.mHash), nullptr, {});
+			mStore->Delete(BlobPath(aName, anEntry.mHash));
 	}
 	return Result::OK;
 }
 
-Result Engine::Download(const Manifest& theManifest, const Snapshot& theHave, Snapshot& theOut)
+Result Engine::Download(const Manifest& theManifest, const Snapshot& theHave, Snapshot& theOut, bool theSkipBroken)
 {
 	theOut.clear();
 	for (const auto& [aName, anEntry] : theManifest.mFiles)
@@ -632,14 +938,19 @@ Result Engine::Download(const Manifest& theManifest, const Snapshot& theHave, Sn
 			continue;
 		}
 
-		HttpResponse aResponse = mHttp->Request("GET", mConfig.mUrl + BlobPath(aName, anEntry.mHash), nullptr, {});
-		if (aResponse.mStatus == 0)
-			return Fail(Result::OFFLINE, aResponse.mError);
-		if (!IsSuccess(aResponse.mStatus))
-			return Fail(Result::FAILED, std::format("downloading {} failed with HTTP {}", aName, aResponse.mStatus));
-		if (aResponse.mBody.size() != anEntry.mSize || HashBytes(aResponse.mBody) != anEntry.mHash)
+		bool aFound = false;
+		std::string aData, aVersion;
+		Result aResult = mStore->Get(BlobPath(aName, anEntry.mHash), aFound, aData, aVersion);
+		if (aResult != Result::OK)
+			return StoreFailed(aResult);
+		bool aBroken = !aFound || aData.size() != anEntry.mSize || HashBytes(aData) != anEntry.mHash;
+		if (aBroken && theSkipBroken)
+			continue;
+		if (!aFound)
+			return Fail(Result::FAILED, std::format("the cloud copy of {} is missing", aName));
+		if (aBroken)
 			return Fail(Result::FAILED, std::format("the cloud copy of {} does not match its manifest", aName));
-		theOut[aName] = std::move(aResponse.mBody);
+		theOut[aName] = std::move(aData);
 	}
 	return Result::OK;
 }
@@ -692,7 +1003,7 @@ Result Engine::Sync(const Snapshot& theLocal, const std::string& theSummary, boo
 	{
 	case Action::NONE:
 		// both sides already agree, possibly after the other device pushed the same files
-		if (aRemote.mExists && aLocal == aRemote.mManifest.mFiles && (!aHasBase || aBase.mRev != aRemote.mManifest.mRev))
+		if (aRemote.mExists && aLocal == aRemote.mManifest.mFiles && (!aHasBase || !SameCommit(aBase, aRemote.mManifest)))
 			SaveBase(aRemote.mManifest);
 		return Result::OK;
 
@@ -728,13 +1039,15 @@ Result Engine::KeepLocal(const Snapshot& theLocal, const std::string& theSummary
 
 	if (aRemote.mExists)
 	{
+		// whatever can still be read of the cloud copy is backed up, so a damaged one never stops this one from winning
 		Snapshot aCloud;
-		aResult = Download(aRemote.mManifest, {}, aCloud);
+		aResult = Download(aRemote.mManifest, {}, aCloud, true);
 		if (aResult != Result::OK)
 			return aResult;
 		Backup(aCloud, "cloud");
 	}
-	return Push(theLocal, theSummary, aRemote);
+	// all files again: in a damaged cloud copy a file can be missing although its manifest entry matches this one
+	return Push(theLocal, theSummary, aRemote, true);
 }
 
 Result Engine::UseCloud()

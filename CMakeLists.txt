@@ -123,15 +123,22 @@ endif()
 option(PVZ_DEBUG "Enable PVZ_DEBUG macro to enable cheats, hidden features, etc." ${PVZ_DEBUG_DEFAULT})
 option(CONSOLE "Show console on Windows" ${WIN_CONSOLE_DEFAULT})
 option(DO_FIX_BUGS "Define DO_FIX_BUGS macro (Community fixes for original game bugs of 1.2.0.1073 GOTY Edition)" OFF)
-# WebDAV cloud save needs libcurl and is only built for desktop systems so far. WebAssembly is left out because most
-# WebDAV servers refuse the browser's cross-origin requests; Switch, Android and iOS have no libcurl set up here.
-# BUILD_STATIC builds would pick up a shared system libcurl (and its TLS stack), so they leave it out too.
+# Cloud save (WebDAV, Google Drive, OneDrive) needs libcurl and is only built for desktop systems so far. WebAssembly
+# is left out because most WebDAV servers refuse the browser's cross-origin requests; Switch, Android and iOS have no
+# libcurl set up here. BUILD_STATIC builds would pick up a shared system libcurl (and its TLS stack), so they leave it
+# out too.
 if(NINTENDO_SWITCH OR ANDROID OR IOS OR EMSCRIPTEN OR BUILD_STATIC)
 	set(CLOUD_SAVE_DEFAULT OFF)
 else()
 	set(CLOUD_SAVE_DEFAULT ON)
 endif()
-option(CLOUD_SAVE "Enable WebDAV cloud save (needs libcurl)" ${CLOUD_SAVE_DEFAULT})
+option(CLOUD_SAVE "Enable cloud save to WebDAV, Google Drive and OneDrive (needs libcurl)" ${CLOUD_SAVE_DEFAULT})
+# Google Drive and OneDrive sign in through an OAuth app registered by whoever ships the build. Without these, players
+# enter the client ID of their own app in the cloud save settings (see the README).
+set(CLOUD_SAVE_GOOGLE_CLIENT_ID "" CACHE STRING "Google OAuth client ID (type: TVs and Limited Input devices) built in for Google Drive")
+set(CLOUD_SAVE_GOOGLE_CLIENT_SECRET "" CACHE STRING "Client secret that goes with CLOUD_SAVE_GOOGLE_CLIENT_ID")
+set(CLOUD_SAVE_ONEDRIVE_CLIENT_ID "" CACHE STRING "Microsoft app registration (public client) ID built in for OneDrive")
+option(CLOUD_SAVE_TESTS "Build cloudsync-test, offline tests of the cloud save protocol" OFF)
 
 if(EMSCRIPTEN)
 	list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/CMake")
@@ -220,8 +227,25 @@ if (LOW_MEMORY)
 endif()
 
 if(CLOUD_SAVE AND CURL_FOUND)
-	target_compile_definitions(pvz-portable PRIVATE PVZP_CLOUD_SAVE)
+	set(_cloud_save_definitions PVZP_CLOUD_SAVE)
+	foreach(_client GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET ONEDRIVE_CLIENT_ID)
+		if(NOT "${CLOUD_SAVE_${_client}}" STREQUAL "")
+			if(NOT "${CLOUD_SAVE_${_client}}" MATCHES "^[A-Za-z0-9._-]+$")
+				message(FATAL_ERROR "CLOUD_SAVE_${_client} may only hold letters, digits, '.', '_' and '-'")
+			endif()
+			list(APPEND _cloud_save_definitions "PVZP_${_client}=\"${CLOUD_SAVE_${_client}}\"")
+		endif()
+	endforeach()
+	target_compile_definitions(pvz-portable PRIVATE ${_cloud_save_definitions})
 	target_link_libraries(pvz-portable PRIVATE CURL::libcurl)
+
+	if(CLOUD_SAVE_TESTS)
+		add_executable(cloudsync-test tests/cloudsync_test.cpp src/Lawn/System/CloudSync.cpp src/Lawn/System/CloudOAuth.cpp)
+		target_include_directories(cloudsync-test PRIVATE src/Lawn/System)
+		target_compile_features(cloudsync-test PRIVATE cxx_std_20)
+		target_compile_definitions(cloudsync-test PRIVATE PVZP_CLOUD_SAVE)
+		target_link_libraries(cloudsync-test PRIVATE CURL::libcurl Threads::Threads)
+	endif()
 endif()
 
 if(EMSCRIPTEN)
