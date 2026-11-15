@@ -102,6 +102,14 @@ static bool HasUnshownAchievements(PlayerInfo* thePlayerInfo)
 	return false;
 }
 
+// Quitting with the cloud save settings open counts as Cancel, which takes back what Sign In saved there: the last
+// sync before the game exits goes to the service in use, not to one that was only being tried.
+static void CancelCloudSaveSettings(LawnApp* theApp)
+{
+	if (Dialog* aDialog = theApp->GetDialog(Dialogs::DIALOG_CLOUD_SAVE_SETTINGS))
+		aDialog->ButtonDepress(Dialog::ID_NO);
+}
+
 bool LawnGetCloseRequest()
 {
 	if (gLawnApp == nullptr)
@@ -181,6 +189,7 @@ LawnApp::~LawnApp()
 		mTrainerPanel.reset();
 	}
 
+	CancelCloudSaveSettings(this);		// done already unless the app went away without Shutdown()
 	while (!mDialogMap.empty())
 	{
 		KillDialog(mDialogMap.begin()->first);
@@ -248,6 +257,7 @@ void LawnApp::Shutdown()
 
 	if (!mShutdown)
 	{
+		CancelCloudSaveSettings(this);
 		SexyAppBase::Shutdown();
 		CloudSave::Shutdown();	// after Shutdown() wrote the last saves
 	}
