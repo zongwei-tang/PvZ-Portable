@@ -139,6 +139,7 @@ CloudSaveDialog::CloudSaveDialog(LawnApp* theApp) : LawnDialog(
 	"",
 	Dialog::BUTTONS_YES_NO),
 	mDraft(CloudSave::GetSettings()),
+	mOpened(mDraft),
 	mProvider(mDraft.mProvider),
 	mSignIn(CloudSave::GetSignIn()),
 	mSeenCodeSerial(mSignIn.mCodeSerial)	// a code handed out before the dialog opened does not open the browser again
@@ -165,7 +166,7 @@ CloudSaveDialog::CloudSaveDialog(LawnApp* theApp) : LawnDialog(
 	CalcSize(std::max(aContentWidth - mHeaderFont->StringWidth(mDialogHeader), 0), aContentHeight);
 }
 
-// A sign-in still running goes on without the dialog: Save keeps it, so a code typed in just before still counts.
+// A sign-in still running goes on without the dialog after Save, so a code typed in just before still counts.
 CloudSaveDialog::~CloudSaveDialog() = default;
 
 void CloudSaveDialog::Show(LawnApp* theApp)
@@ -487,13 +488,18 @@ bool CloudSaveDialog::Apply(bool theForSignIn)
 		ShowMessage("Could not write cloudsave.ini.");
 		return false;
 	}
+	mSavedForSignIn = theForSignIn;
 	return true;
 }
 
-void CloudSaveDialog::Close(bool theStopSignIn)
+// Cancel also takes back what Sign In saved, so trying another service never quietly stops the one in use.
+// The sign-in itself is kept: picking that service later and saving needs no new one.
+void CloudSaveDialog::Close(bool theCancel)
 {
-	if (theStopSignIn && SigningIn())
+	if (theCancel && SigningIn())
 		CloudSave::CancelSignIn();
+	if (theCancel && mSavedForSignIn)
+		CloudSave::ApplySettings(mOpened);
 	mApp->KillDialog(mId);
 }
 

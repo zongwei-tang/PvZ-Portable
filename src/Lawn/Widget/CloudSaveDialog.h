@@ -49,6 +49,8 @@ public:
 	std::unique_ptr<LawnStoneButton>		mSignInButton;
 	std::unique_ptr<LawnStoneButton>		mSyncButton;
 	CloudSync::Config						mDraft;			// the fields of every service, as typed so far
+	CloudSync::Config						mOpened;		// the settings when the dialog opened
+	bool									mSavedForSignIn = false;	// Sign In saved settings that Save did not confirm yet
 	CloudSync::Provider						mProvider;
 	CloudSave::SignInState					mSignIn;
 	int										mSeenCodeSerial;
@@ -90,7 +92,7 @@ private:
 	bool				SigningIn() const;
 	CloudSync::Config	ReadFields();
 	bool				Apply(bool theForSignIn);
-	void				Close(bool theStopSignIn);
+	void				Close(bool theCancel);
 };
 
 #endif
