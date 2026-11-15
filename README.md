@@ -48,7 +48,7 @@ A **cross-platform** community-driven reimplementation of Plants vs. Zombies: Ga
 - [x] Unlockable **Hidden Limbo Page** with additional levels in the original game
   - To unlock it, open the Mini-Games / Puzzle / Survival selection screen and tap any blank area **5 times in rapid succession**
 - [x] **Record and deterministically replay** gameplay sessions — see [Recording and Playing Back Gameplay](#recording-and-playing-back-gameplay)
-- [x] **Cloud save over WebDAV** on desktop systems — see [Cloud Save (WebDAV)](#cloud-save-webdav)
+- [x] **Cloud save** to WebDAV, Google Drive or OneDrive on desktop systems — see [Cloud Save](#cloud-save)
 
 This project supports the following platforms (including but not limited to):
 
@@ -231,7 +231,10 @@ You can customize the game features by adding options to the first `cmake` comma
 | `PVZ_DEBUG` | `OFF`<br>(`ON` if `CMAKE_BUILD_TYPE` is `Debug`) | Enable **cheat keys**, debug displays and other debug features. |
 | `DO_FIX_BUGS` | `OFF` | Apply community fixes for "bugs" of official 1.2.0.1073 GOTY Edition.[^1] However, these "bugs" are usually **considered "features"** by many players. |
 | `CONSOLE` | `OFF`<br>(`ON` if `CMAKE_BUILD_TYPE` is `Debug`) | Show a console window (Windows only). |
-| `CLOUD_SAVE` | `ON`<br>(`OFF` on WebAssembly, Switch, Android, iOS and with `BUILD_STATIC`) | Build the [WebDAV cloud save](#cloud-save-webdav). Needs `libcurl`; when it is not found the game builds without cloud save. |
+| `CLOUD_SAVE` | `ON`<br>(`OFF` on WebAssembly, Switch, Android, iOS and with `BUILD_STATIC`) | Build the [cloud save](#cloud-save) to WebDAV, Google Drive and OneDrive. Needs `libcurl`; when it is not found the game builds without cloud save. |
+| `CLOUD_SAVE_GOOGLE_CLIENT_ID`<br>`CLOUD_SAVE_GOOGLE_CLIENT_SECRET` | empty | Google OAuth client built into the game, so players can sign in to Google Drive without [their own client](#google-cloud-client). |
+| `CLOUD_SAVE_ONEDRIVE_CLIENT_ID` | empty | Microsoft app registration built into the game, so players can sign in to OneDrive without [their own registration](#microsoft-app-registration). |
+| `CLOUD_SAVE_TESTS` | `OFF` | Also build `cloudsync-test`, offline tests of the cloud save against simulated WebDAV, Google Drive and OneDrive servers. |
 | `BUILD_STATIC` | `OFF` | Link dependencies statically (Windows with MinGW-based toolchains, glibc-based Linux). Use a vcpkg `-static` triplet for MSVC. |
 
 [^1]: Current `DO_FIX_BUGS` includes the following fixes:
@@ -312,33 +315,95 @@ mv ~/.local/io.github.wszqkzqk/PvZPortable/userdata/game1_13.v4 ~/.local/io.gith
 python3 scripts/pvzp-v4-converter.py import level.yaml ~/.local/io.github.wszqkzqk/PvZPortable/userdata/game1_13.v4
 ```
 
-## Cloud Save (WebDAV)
+## Cloud Save
 
-Desktop builds can keep the `userdata/` folder (profiles, adventure progress, coins, Zen Garden and mid-level saves) in sync with a WebDAV folder, so you can continue on another computer. Any WebDAV server works, e.g. Nextcloud, ownCloud, Synology, Apache `mod_dav` or Jianguoyun (坚果云).
+Desktop builds can keep the `userdata/` folder (profiles, adventure progress, coins, Zen Garden and mid-level saves) in sync with the cloud, so you can continue on another computer. Three services are supported:
 
-Set it up in the game: on the main menu open **Options → Cloud Save**, tick **Enabled**, enter the server URL, username and password, then press **Sync Now** to try the connection or **Save**. The button is only on the main menu, because a sync can replace the loaded profiles.
+- **WebDAV**: any WebDAV server, e.g. Nextcloud, ownCloud, Synology, Apache `mod_dav` or Jianguoyun (坚果云).
+- **Google Drive**: the saves go into the app's hidden data folder in your Drive, where they do not mix with your files.
+- **OneDrive**: the saves go into `Apps/<app name>/PvZPortable/` in your OneDrive.
+
+Set it up in the game: on the main menu open **Options → Cloud Save** and pick the service with the **Service** button. The Cloud Save button is only on the main menu, because a sync can replace the loaded profiles.
+
+### WebDAV
+
+Tick **Enabled**, enter the server URL, username and password, then press **Sync Now** to try the connection, or **Save**.
+
+- The server URL is the WebDAV root of your account; the saves go into the folder `PvZPortable` below it.
+- The password is stored as **plain text**. Use an app password (Nextcloud, Jianguoyun and most others offer them) rather than your account password.
+
+### Google Drive and OneDrive
+
+These sign in through the browser instead of with a password:
+
+1. Pick the service, enter the client ID (for Google also the client secret, see below), tick **Enabled** and press **Sign In**.
+2. The game opens the sign-in page in your browser and shows a short code, which it also copies to the clipboard. Enter the code on that page, sign in and allow the access.
+3. Once the dialog shows your account, press **Save**.
+
+The sign-in is kept in `cloudsave-google-token.txt` or `cloudsave-onedrive-token.txt` in the per-user data folder (on macOS and Linux readable only by your user account). **Sign Out** forgets it on this computer; to revoke the access itself, remove the app in your Google or Microsoft account settings. **Cancel** also takes back the service choice that **Sign In** saved, but keeps the sign-in.
+
+A build has no client of its own unless whoever made it [built one in](#built-in-client-ids); then leave the client fields empty. Otherwise create your own, which is free:
+
+#### Google Cloud client
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create a project and enable the **Google Drive API** for it.
+2. Set up the OAuth consent screen (Google Auth Platform): audience **External**, any app name, and under **Data Access** add the scope `https://www.googleapis.com/auth/drive.appdata`.
+3. Under **Audience**, add your Google account as a test user, or publish the app. While the app is in **Testing**, Google lets a sign-in last only 7 days, after which the game asks you to sign in again. Google may warn that the app is not verified; for your own client you can continue.
+4. Under **Clients** (**Credentials** in the older console), create an OAuth client of the type **TVs and Limited Input devices**, and enter its client ID and client secret in the game. Google requires the secret for this kind of sign-in, even though a program on your computer cannot keep it secret.
+
+#### Microsoft app registration
+
+1. In the [Microsoft Entra admin center](https://entra.microsoft.com/) (or the Azure portal), open **App registrations → New registration**:
+   - **Name**: becomes the folder under `Apps/` in OneDrive, e.g. `PvZ Portable`.
+   - **Supported account types**: **Accounts in any organizational directory and personal Microsoft accounts**. The game signs in through the `common` endpoint, which turns down a registration for personal accounts only.
+   - No redirect URI is needed.
+2. Under **Authentication**, set **Allow public client flows** to **Yes** and save.
+3. Under **API permissions**, add the Microsoft Graph delegated permissions `Files.ReadWrite.AppFolder` and `offline_access`.
+4. Enter the **Application (client) ID** from the **Overview** page in the game. There is no client secret.
+
+Microsoft documents `Files.ReadWrite.AppFolder` for personal Microsoft accounts and marks it as preview, so a work or school account may not be able to use it, or may need its administrator's consent.
+
+#### Built-in client IDs
+
+To make a build that signs in without these steps, pass the client IDs to the first `cmake` command; they are compiled into the game:
+
+```bash
+cmake -G Ninja -B build -DCLOUD_SAVE_GOOGLE_CLIENT_ID=1234-abc.apps.googleusercontent.com -DCLOUD_SAVE_GOOGLE_CLIENT_SECRET=GOCSPX-abc -DCLOUD_SAVE_ONEDRIVE_CLIENT_ID=00000000-0000-0000-0000-000000000000
+```
+
+A client ID entered in the game or in `cloudsave.ini` takes precedence over the built-in one.
+
+### The settings file
 
 The settings are kept in `cloudsave.ini` next to `registry.regemu` in the per-user data folder, which you can also edit by hand and then restart the game:
 
 ```ini
 enabled=1
+provider=webdav
 url=https://cloud.example.com/remote.php/dav/files/alice/
 username=alice
 password=app-password-here
 folder=PvZPortable
+google_client_id=
+google_client_secret=
+onedrive_client_id=
 ```
 
-- `url` is the WebDAV root of your account; the saves go into `folder` below it.
-- The password is stored as **plain text**. Use an app password (Nextcloud, Jianguoyun and most others offer them) rather than your account password.
+- `provider` is `webdav`, `google` or `onedrive`.
+- `folder` holds the saves: below `url` on WebDAV, in the app's data folder on Google Drive, in the app's folder on OneDrive.
 
-How syncing works:
+### How syncing works
 
 - At start the game downloads newer saves from the cloud before loading the profiles.
 - When saves change, they are uploaded in the background a few seconds later, and once more when the game exits. Every 5 minutes the game also checks the cloud for saves from other devices; those are loaded the next time the main menu is idle.
 - The folder is synced as a whole, never file by file, because profile ids differ between devices.
-- If the saves changed both on this device and in the cloud since the last sync, the main menu asks which copy to keep (click a button; the keyboard is ignored there so a stray key cannot decide). The other copy is backed up to `cloudsave-backup/` in the per-user data folder.
+- If the saves changed both on this device and in the cloud since the last sync, the main menu asks which copy to keep (click a button; the keyboard is ignored there so a stray key cannot decide). The other copy is backed up to `cloudsave-backup/` in the per-user data folder. Keeping this device's copy also repairs a cloud copy that is incomplete.
+- OneDrive and most WebDAV servers turn down an upload that would overwrite another device's newer save. Google Drive cannot, so when two devices save at the same moment there, the game notices on the next sync and asks which copy to keep.
+- After switching to another service, folder or account, the first sync asks which copy to keep if both this device and the cloud already have different saves.
 - Without a connection the game runs normally and retries later.
-- Server files: `manifest.txt` is the committed state and `files/` holds the save files. Do not edit them by hand.
+- Cloud files: `manifest.txt` is the committed state and `files/` holds the save files. Do not edit them by hand.
+
+To test the protocol without any server, configure with `-DCLOUD_SAVE_TESTS=ON` and run `build/cloudsync-test`.
 
 ## Recording and Playing Back Gameplay
 
