@@ -296,10 +296,9 @@ void TrainerPanel::UpdateClosedState()
 	if (mOpen)
 		return;
 
-	// The corner button only shows on the lawn and the main menu, where nothing else sits in that corner
-	bool aShow = mApp->mDialogList.empty() && !mApp->mChallengeScreen && !mApp->mAwardScreen && !mApp->mCreditScreen &&
-		(mApp->mBoard != nullptr || mApp->mGameSelector != nullptr);
-	int aWidth = gTrainer.mBrush != TRAINER_BRUSH_NONE ? 360 : 92;
+	// Closed, the panel shows nothing but the level maker hint while a brush is placing, on the lawn
+	bool aShow = gTrainer.mBrush != TRAINER_BRUSH_NONE && mApp->mDialogList.empty() && mApp->mBoard != nullptr;
+	int aWidth = 360;
 	if (aShow != mVisible || mWidth != aWidth)
 	{
 		mVisible = aShow;
@@ -366,17 +365,15 @@ void TrainerPanel::Draw(Graphics* g)
 {
 	if (!mOpen)
 	{
-		bool anActive = gTrainer.AnyActive();
-		g->SetColor(anActive ? Color(90, 60, 0, 200) : Color(0, 0, 0, 150));
+		if (gTrainer.mBrush == TRAINER_BRUSH_NONE)
+			return;
+		g->SetColor(Color(0, 0, 0, 150));
 		g->FillRect(0, 0, mWidth, mHeight);
 		g->SetColor(Color(150, 200, 90));
 		g->DrawRect(0, 0, mWidth - 1, mHeight - 1);
 		g->SetFont(Sexy::FONT_DWARVENTODCRAFT12);
-		g->SetColor(anActive ? Color(255, 230, 80) : Color(255, 255, 255));
-		if (gTrainer.mBrush != TRAINER_BRUSH_NONE)
-			g->DrawString(std::format("Placing {}. Right-click to stop", TrainerBrushName()), 6, 13);
-		else
-			g->DrawString(anActive ? "Trainer ON" : "Trainer", 6, 13);
+		g->SetColor(Color(255, 255, 255));
+		g->DrawString(std::format("Placing {}. Right-click to stop", TrainerBrushName()), 6, 13);
 		return;
 	}
 

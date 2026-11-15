@@ -15,8 +15,8 @@
 class LawnApp;
 class Board;
 
-// Built-in trainer: a full-screen overlay toggled with the key under Esc, F1, or a small "Trainer"
-// button in the bottom-left corner of the lawn and the main menu (it turns yellow while a switch is on).
+// Built-in trainer: a full-screen overlay toggled with the key under Esc or F1. Closed, it draws nothing,
+// except a hint in the bottom-left corner while the level maker brush is placing.
 class TrainerPanel : public Sexy::Widget
 {
 public:
