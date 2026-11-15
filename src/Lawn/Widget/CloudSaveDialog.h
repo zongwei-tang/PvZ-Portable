@@ -53,7 +53,7 @@ public:
 	bool									mSavedForSignIn = false;	// Sign In saved settings that Save did not confirm yet
 	CloudSync::Provider						mProvider;
 	CloudSave::SignInState					mSignIn;
-	int										mSeenCodeSerial;
+	bool									mPageCopied = false;	// the address of the sign-in page is on the clipboard
 	bool									mSignedIn = false;	// to mProvider, read from disk on changes only
 	std::string								mStatus;
 	bool									mStatusIsMessage = false;	// else mStatus follows the sync status
@@ -90,6 +90,9 @@ private:
 	void				ShowIdleStatus();
 	std::string			IdleStatus() const;
 	bool				SigningIn() const;
+	std::string			SignInText() const;
+	void				OpenSignInPage();
+	void				ShowSignInEnd();
 	CloudSync::Config	ReadFields();
 	bool				Apply(bool theForSignIn);
 	void				Close(bool theCancel);

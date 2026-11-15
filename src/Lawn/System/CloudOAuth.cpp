@@ -4,7 +4,7 @@
  * This file is part of PvZ-Portable (local cloud save patch).
  */
 
-// Google Drive and OneDrive: OAuth device sign-in and the two stores (see CloudSync.h).
+// Google Drive and OneDrive: the OAuth sign-in in the browser and the two stores (see CloudSync.h).
 
 #ifdef PVZP_CLOUD_SAVE
 
@@ -13,7 +13,9 @@
 #include <algorithm>
 #include <chrono>
 #include <format>
+#include <exception>
 #include <initializer_list>
+#include <optional>
 #include <random>
 #include <tuple>
 #include <utility>
@@ -29,7 +31,7 @@ namespace
 using Clock = std::chrono::steady_clock;
 
 // drive.appdata: only the app's own hidden folder in the player's Drive, nothing else in it
-constexpr const char* GOOGLE_DEVICE_URL = "https://oauth2.googleapis.com/device/code";
+constexpr const char* GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 constexpr const char* GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 constexpr const char* GOOGLE_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
 constexpr const char* GOOGLE_FILES_URL = "https://www.googleapis.com/drive/v3/files";
@@ -37,7 +39,7 @@ constexpr const char* GOOGLE_UPLOAD_URL = "https://www.googleapis.com/upload/dri
 constexpr const char* GOOGLE_ABOUT_URL = "https://www.googleapis.com/drive/v3/about";
 
 // Files.ReadWrite.AppFolder: only Apps/<app name> in the player's OneDrive; offline_access gives the refresh token
-constexpr const char* MICROSOFT_DEVICE_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/devicecode";
+constexpr const char* MICROSOFT_AUTH_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
 constexpr const char* MICROSOFT_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
 constexpr const char* MICROSOFT_SCOPE = "Files.ReadWrite.AppFolder offline_access";
 constexpr const char* GRAPH_APPROOT_URL = "https://graph.microsoft.com/v1.0/me/drive/special/approot";
@@ -53,16 +55,19 @@ struct Client
 {
 	std::string	mId;
 	std::string	mSecret;
-	const char*	mDeviceUrl;
+	const char*	mAuthUrl;
 	const char*	mTokenUrl;
 	const char*	mScope;
+	const char*	mRedirectHost;		// where the browser comes back to, at the port the game listens on
 };
 
 Client ClientFor(const Config& theConfig)
 {
+	// Google takes any loopback address for a Desktop app client. Microsoft matches the address registered for the
+	// app, http://localhost, ignoring only the port.
 	if (theConfig.mProvider == Provider::GOOGLE_DRIVE)
-		return Client{ GoogleClientId(theConfig), GoogleClientSecret(theConfig), GOOGLE_DEVICE_URL, GOOGLE_TOKEN_URL, GOOGLE_SCOPE };
-	return Client{ OneDriveClientId(theConfig), "", MICROSOFT_DEVICE_URL, MICROSOFT_TOKEN_URL, MICROSOFT_SCOPE };
+		return Client{ GoogleClientId(theConfig), GoogleClientSecret(theConfig), GOOGLE_AUTH_URL, GOOGLE_TOKEN_URL, GOOGLE_SCOPE, "http://127.0.0.1" };
+	return Client{ OneDriveClientId(theConfig), "", MICROSOFT_AUTH_URL, MICROSOFT_TOKEN_URL, MICROSOFT_SCOPE, "http://localhost" };
 }
 
 // application/x-www-form-urlencoded; empty values are left out
@@ -108,6 +113,7 @@ std::string Shorten(std::string theText)
 }
 
 // OAuth errors are {"error": "invalid_grant", "error_description": "..."}, API errors {"error": {"message": "..."}}.
+// The code of an OAuth error goes first, as Google's descriptions ("Bad Request", "Unauthorized") say little alone.
 std::string ErrorMessage(const HttpResponse& theResponse)
 {
 	Json::Value aJson;
@@ -123,8 +129,12 @@ std::string ErrorMessage(const HttpResponse& theResponse)
 			}
 			else
 			{
-				std::string aDescription = aJson.Str("error_description");
-				return Shorten(aDescription.empty() ? anError->mString : aDescription);
+				std::string aCode = Shorten(anError->mString);
+				std::string aDescription = Shorten(aJson.Str("error_description"));
+				if (!aCode.empty() && !aDescription.empty() && aDescription.find(aCode) == std::string::npos)
+					return std::format("{}: {}", aCode, aDescription);
+				if (!aCode.empty() || !aDescription.empty())
+					return aDescription.empty() ? aCode : aDescription;
 			}
 		}
 	}
@@ -139,6 +149,46 @@ std::string RandomId()
 	return std::format("{:016x}", aRandom());
 }
 
+// For the PKCE verifier and the state, which must not be guessable: from the system's generator. libstdc++ may take
+// a CPU instruction (RDSEED or RDRAND) first where there is one, which some CPUs have got wrong, so it is asked for
+// /dev/urandom by name. Elsewhere random_device draws from the system's generator already.
+std::string RandomBytes(size_t theCount)
+{
+	std::optional<std::random_device> aDevice;
+#if defined(__GLIBCXX__) && !defined(_WIN32)
+	try
+	{
+		aDevice.emplace("/dev/urandom");
+	}
+	catch (const std::exception&)
+	{
+	}
+#endif
+	if (!aDevice)
+		aDevice.emplace();
+	std::string aBytes;
+	while (aBytes.size() < theCount)
+	{
+		uint32_t aValue = (*aDevice)();
+		for (int i = 0; i < 4 && aBytes.size() < theCount; i++, aValue >>= 8)
+			aBytes += static_cast<char>(aValue & 0xff);
+	}
+	return aBytes;
+}
+
+// Whether theScopes, a list of scopes split by spaces as a token response has them, holds theScope.
+bool HasScope(std::string_view theScopes, std::string_view theScope)
+{
+	while (!theScopes.empty())
+	{
+		size_t aSpace = theScopes.find(' ');
+		if (theScopes.substr(0, aSpace) == theScope)
+			return true;
+		theScopes = aSpace == std::string_view::npos ? std::string_view() : theScopes.substr(aSpace + 1);
+	}
+	return false;
+}
+
 // Best effort: a stable id of the account (and a name to show) right after the sign-in.
 void FetchAccount(Transport& theHttp, Provider theProvider, const std::string& theAccess, Token& theToken)
 {
@@ -147,7 +197,7 @@ void FetchAccount(Transport& theHttp, Provider theProvider, const std::string& t
 	if (theProvider == Provider::GOOGLE_DRIVE)
 		aRequest.mUrl = std::format("{}?fields={}", GOOGLE_ABOUT_URL, UrlEscape("user(permissionId,emailAddress)"));
 	else
-		aRequest.mUrl = std::format("{}?{}={}", GRAPH_APPROOT_URL, UrlEscape("$select"), UrlEscape("id,parentReference"));
+		aRequest.mUrl = std::format("{}?$select=id,parentReference", GRAPH_APPROOT_URL);	// the "$" as OData documents it
 
 	HttpResponse aResponse = theHttp.Request(aRequest);
 	Json::Value aJson;
@@ -204,8 +254,15 @@ class OAuthSession
 		std::string anAccess = aParsed ? aJson.Str("access_token") : std::string();
 		if (!IsSuccess(aResponse.mStatus) || anAccess.empty())
 		{
-			if (aParsed && aJson.Str("error") == "invalid_grant")
+			std::string aCode = aParsed ? aJson.Str("error") : std::string();
+			bool aGoogle = mConfig.mProvider == Provider::GOOGLE_DRIVE;
+			if (aCode == "invalid_grant")
 				return Fail(Result::FAILED, std::format("the {} sign-in expired or was revoked, sign in again", ProviderName(mConfig.mProvider)));
+			// a refresh token from another client, such as the "TVs and Limited Input devices" one of earlier versions
+			if (aGoogle && aCode == "unauthorized_client")
+				return Fail(Result::FAILED, "the Google Drive sign-in was made with another client ID: press Sign Out, then Sign In again");
+			if (aGoogle && aCode == "invalid_client")
+				return Fail(Result::FAILED, "Google did not accept the client ID and secret: check that the secret belongs to this client ID (see the README)");
 			return Fail(Result::FAILED, std::format("signing in to {} failed: {}", ProviderName(mConfig.mProvider), ErrorMessage(aResponse)));
 		}
 
@@ -213,12 +270,18 @@ class OAuthSession
 		int64_t aLifetime = std::clamp<int64_t>(aJson.Int("expires_in", 3600), 60, 86400);
 		mExpiry = Clock::now() + std::chrono::seconds(aLifetime - 30);
 
-		// Microsoft hands out a new refresh token with every refresh (the old one keeps working for a while)
+		// Microsoft hands out a new refresh token with every refresh (the old one keeps working for a while). A file
+		// from before the client ID was kept learns it from the first refresh that this client got through with.
+		Token aToken = mToken;
 		std::string aRefresh = aJson.Str("refresh_token");
-		if (!aRefresh.empty() && aRefresh != mToken.mRefresh)
+		if (!aRefresh.empty())
+			aToken.mRefresh = aRefresh;
+		if (aToken.mClient.empty())
+			aToken.mClient = aClient.mId;
+		if (aToken.mRefresh != mToken.mRefresh || aToken.mClient != mToken.mClient)
 		{
-			mToken.mRefresh = aRefresh;
-			SaveToken(mStateDir, mConfig.mProvider, mToken);
+			ReplaceToken(mStateDir, mConfig.mProvider, mToken.mRefresh, aToken);	// not over a sign-in made since
+			mToken = aToken;
 		}
 		return Result::OK;
 	}
@@ -227,7 +290,7 @@ public:
 	OAuthSession(const Config& theConfig, fs::path theStateDir, Transport& theHttp) :
 		mConfig(theConfig), mStateDir(std::move(theStateDir)), mHttp(theHttp)
 	{
-		mSignedIn = LoadToken(mStateDir, mConfig.mProvider, mToken);
+		mSignedIn = LoadTokenFor(mStateDir, mConfig, mToken);
 	}
 
 	const Token&		GetToken() const { return mToken; }
@@ -765,82 +828,273 @@ std::unique_ptr<Store> MakeOneDriveStore(const Config& theConfig, const fs::path
 	return std::make_unique<OneDriveStore>(theConfig, theStateDir, std::move(theTransport));
 }
 
-Result DeviceSignIn(Transport& theHttp, const Config& theConfig, const std::function<void(const DeviceCode&)>& theOnCode,
-	const std::function<bool(int)>& theWait, Token& theToken, std::string& theError)
+std::string Sha256(std::string_view theData)
+{
+	static constexpr uint32_t K[64] = {
+		0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+		0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+		0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+		0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+		0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+		0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+		0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+		0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+	};
+	uint32_t aState[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 };
+
+	// the message, a one bit, zeros up to 56 bytes into the last block, and the length in bits
+	std::string aMessage(theData);
+	uint64_t aBits = static_cast<uint64_t>(theData.size()) * 8;
+	aMessage += static_cast<char>(0x80);
+	while (aMessage.size() % 64 != 56)
+		aMessage += '\0';
+	for (int i = 7; i >= 0; i--)
+		aMessage += static_cast<char>((aBits >> (i * 8)) & 0xff);
+
+	auto aRotate = [](uint32_t theValue, int theCount) { return (theValue >> theCount) | (theValue << (32 - theCount)); };
+	auto aByte = [&aMessage](size_t theAt) { return static_cast<uint32_t>(static_cast<uint8_t>(aMessage[theAt])); };
+	for (size_t aBlock = 0; aBlock < aMessage.size(); aBlock += 64)
+	{
+		uint32_t w[64];
+		for (int i = 0; i < 16; i++)
+		{
+			size_t anAt = aBlock + static_cast<size_t>(i) * 4;
+			w[i] = (aByte(anAt) << 24) | (aByte(anAt + 1) << 16) | (aByte(anAt + 2) << 8) | aByte(anAt + 3);
+		}
+		for (int i = 16; i < 64; i++)
+		{
+			uint32_t s0 = aRotate(w[i - 15], 7) ^ aRotate(w[i - 15], 18) ^ (w[i - 15] >> 3);
+			uint32_t s1 = aRotate(w[i - 2], 17) ^ aRotate(w[i - 2], 19) ^ (w[i - 2] >> 10);
+			w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+		}
+
+		uint32_t a = aState[0], b = aState[1], c = aState[2], d = aState[3], e = aState[4], f = aState[5], g = aState[6], h = aState[7];
+		for (int i = 0; i < 64; i++)
+		{
+			uint32_t t1 = h + (aRotate(e, 6) ^ aRotate(e, 11) ^ aRotate(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i];
+			uint32_t t2 = (aRotate(a, 2) ^ aRotate(a, 13) ^ aRotate(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+			h = g;
+			g = f;
+			f = e;
+			e = d + t1;
+			d = c;
+			c = b;
+			b = a;
+			a = t1 + t2;
+		}
+		aState[0] += a;
+		aState[1] += b;
+		aState[2] += c;
+		aState[3] += d;
+		aState[4] += e;
+		aState[5] += f;
+		aState[6] += g;
+		aState[7] += h;
+	}
+
+	std::string aDigest;
+	for (uint32_t aWord : aState)
+		for (int i = 3; i >= 0; i--)
+			aDigest += static_cast<char>((aWord >> (i * 8)) & 0xff);
+	return aDigest;
+}
+
+std::string Base64Url(std::string_view theData)
+{
+	static constexpr char ALPHABET[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+	auto aByte = [&theData](size_t theAt) { return static_cast<uint32_t>(static_cast<uint8_t>(theData[theAt])); };
+
+	std::string aText;
+	size_t i = 0;
+	for (; i + 2 < theData.size(); i += 3)
+	{
+		uint32_t aGroup = (aByte(i) << 16) | (aByte(i + 1) << 8) | aByte(i + 2);
+		aText += ALPHABET[aGroup >> 18];
+		aText += ALPHABET[(aGroup >> 12) & 63];
+		aText += ALPHABET[(aGroup >> 6) & 63];
+		aText += ALPHABET[aGroup & 63];
+	}
+	size_t aLeft = theData.size() - i;
+	if (aLeft > 0)
+	{
+		uint32_t aGroup = (aByte(i) << 16) | (aLeft > 1 ? aByte(i + 1) << 8 : 0);
+		aText += ALPHABET[aGroup >> 18];
+		aText += ALPHABET[(aGroup >> 12) & 63];
+		if (aLeft > 1)
+			aText += ALPHABET[(aGroup >> 6) & 63];
+	}
+	return aText;
+}
+
+BrowserSignIn::BrowserSignIn(const Config& theConfig, std::unique_ptr<RedirectListener> theListener) :
+	mConfig(theConfig), mListener(std::move(theListener))
+{
+}
+
+BrowserSignIn::~BrowserSignIn() = default;
+
+Result BrowserSignIn::Start(std::string& thePage, std::string& theError)
+{
+	thePage.clear();
+	if (!IsOAuth(mConfig.mProvider))
+	{
+		theError = "WebDAV has no sign-in";
+		return Result::FAILED;
+	}
+	const char* aName = ProviderName(mConfig.mProvider);
+	Client aClient = ClientFor(mConfig);
+	if (aClient.mId.empty())
+	{
+		theError = std::format("enter the client ID of your {} app first (see the README)", aName);
+		return Result::FAILED;
+	}
+	if (mConfig.mProvider == Provider::GOOGLE_DRIVE && aClient.mSecret.empty())
+	{
+		// a secret typed in goes with a client ID typed in, never with the one built in
+		theError = mConfig.mGoogleClientId.empty() ?
+			"this build has a Google client ID but no client secret: enter the client ID and secret of your own Google app (see the README)" :
+			"enter the client secret of your Google app first (see the README)";
+		return Result::FAILED;
+	}
+
+	if (!mListener)
+		mListener = MakeLoopbackListener();
+	if (!mListener->Open(theError))
+		return Result::FAILED;
+
+	mVerifier = Base64Url(RandomBytes(32));		// 43 characters, as RFC 7636 asks for at least
+	mState = Base64Url(RandomBytes(16));
+	mRedirect = std::format("{}:{}", aClient.mRedirectHost, mListener->Port());
+	std::string aChallenge = Base64Url(Sha256(mVerifier));
+	if (mConfig.mProvider == Provider::GOOGLE_DRIVE)
+	{
+		// offline and consent: a refresh token every time, also for an account that allowed the game before
+		thePage = std::format("{}?{}", aClient.mAuthUrl, Form({ { "client_id", aClient.mId }, { "redirect_uri", mRedirect },
+			{ "response_type", "code" }, { "scope", aClient.mScope }, { "code_challenge", aChallenge }, { "code_challenge_method", "S256" },
+			{ "state", mState }, { "access_type", "offline" }, { "prompt", "consent select_account" } }));
+	}
+	else
+	{
+		thePage = std::format("{}?{}", aClient.mAuthUrl, Form({ { "client_id", aClient.mId }, { "response_type", "code" },
+			{ "redirect_uri", mRedirect }, { "response_mode", "query" }, { "scope", aClient.mScope }, { "state", mState },
+			{ "code_challenge", aChallenge }, { "code_challenge_method", "S256" }, { "prompt", "select_account" } }));
+	}
+	return Result::OK;
+}
+
+Result BrowserSignIn::Finish(Transport& theHttp, const std::function<bool()>& theKeepWaiting, const std::function<void()>& theOnAnswer,
+	const std::function<bool(const Token&)>& theOnSignedIn, Token& theToken, std::string& theError, std::chrono::seconds theTimeLimit)
 {
 	theToken = Token();
-	auto aFail = [&theError](Result theResult, std::string theText)
+	theError.clear();
+	if (!mListener || mState.empty())
 	{
-		theError = std::move(theText);
-		return theResult;
-	};
+		theError = "the sign-in was not started";
+		return Result::FAILED;
+	}
 
-	if (!IsOAuth(theConfig.mProvider))
-		return aFail(Result::FAILED, "WebDAV has no sign-in");
-	const char* aName = ProviderName(theConfig.mProvider);
-	Client aClient = ClientFor(theConfig);
-	if (aClient.mId.empty())
-		return aFail(Result::FAILED, std::format("enter the client ID of your {} app first (see the README)", aName));
+	// used up by this sign-in, whatever comes of it: going away, it tells a browser still waiting that it failed
+	std::unique_ptr<RedirectListener> aListener = std::move(mListener);
+	const char* aName = ProviderName(mConfig.mProvider);
+	const char* aStorage = mConfig.mProvider == Provider::GOOGLE_DRIVE ? "Google Drive" : "OneDrive";
+	Clock::time_point aDeadline = Clock::now() + theTimeLimit;
+	bool aTimedOut = false;
+	Query aQuery;
+	bool anAnswered = aListener->Wait(mState, aQuery, [&]()
+	{
+		if (!theKeepWaiting())
+			return false;
+		aTimedOut = Clock::now() >= aDeadline;
+		return !aTimedOut;
+	}, theError);
+	if (!anAnswered)
+	{
+		// A client ID or redirect URI the provider does not know is shown on its page only (RFC 6749 section
+		// 4.1.2.1): the browser never comes back then.
+		if (theError.empty())
+			theError = aTimedOut ? "the browser did not come back in time; if the sign-in page showed an error, check the client settings (see the README)" :
+				"the sign-in was cancelled";
+		return Result::FAILED;
+	}
+	if (theOnAnswer)
+		theOnAnswer();
 
-	HttpResponse aResponse = PostForm(theHttp, aClient.mDeviceUrl, Form({ { "client_id", aClient.mId }, { "scope", aClient.mScope } }));
+	if (aQuery.contains("error"))
+	{
+		const std::string& anError = aQuery["error"];
+		if (anError == "access_denied")
+		{
+			aListener->Reply(RedirectListener::Outcome::DENIED);
+			theError = std::format("the game was not given access to your {}", aStorage);
+		}
+		else
+			theError = std::format("{} turned down the sign-in: {}", aName, Shorten(aQuery["error_description"].empty() ? anError : aQuery["error_description"]));
+		return Result::FAILED;
+	}
+	if (aQuery["code"].empty())
+	{
+		theError = std::format("{} sent the browser back without a sign-in code", aName);
+		return Result::FAILED;
+	}
+
+	// Microsoft's own example sends the scope again; Google takes it from the code alone
+	Client aClient = ClientFor(mConfig);
+	HttpResponse aResponse = PostForm(theHttp, aClient.mTokenUrl, Form({ { "client_id", aClient.mId }, { "client_secret", aClient.mSecret },
+		{ "code", aQuery["code"] }, { "code_verifier", mVerifier }, { "grant_type", "authorization_code" }, { "redirect_uri", mRedirect },
+		{ "scope", mConfig.mProvider == Provider::ONEDRIVE ? aClient.mScope : "" } }));
 	if (aResponse.mStatus == 0)
-		return aFail(Result::OFFLINE, aResponse.mError);
+	{
+		theError = aResponse.mError;
+		return Result::OFFLINE;
+	}
 
 	Json::Value aJson;
-	Json::Parse(aResponse.mBody, aJson);
-	DeviceCode aCode;
-	aCode.mDeviceCode = aJson.Str("device_code");
-	aCode.mUserCode = aJson.Str("user_code");
-	aCode.mUrl = aJson.Str("verification_url");		// Google's name for it
-	if (aCode.mUrl.empty())
-		aCode.mUrl = aJson.Str("verification_uri");		// RFC 8628, Microsoft
-	aCode.mInterval = static_cast<int>(std::clamp<int64_t>(aJson.Int("interval", 5), 1, 60));
-	aCode.mExpiresIn = static_cast<int>(std::clamp<int64_t>(aJson.Int("expires_in", 900), 60, 3600));
-	if (!IsSuccess(aResponse.mStatus) || aCode.mDeviceCode.empty() || aCode.mUserCode.empty() || aCode.mUrl.empty())
-		return aFail(Result::FAILED, std::format("{} would not start the sign-in: {}", aName, ErrorMessage(aResponse)));
-	theOnCode(aCode);
-
-	int anInterval = aCode.mInterval;
-	for (int aWaited = 0; aWaited < aCode.mExpiresIn;)
+	bool aParsed = Json::Parse(aResponse.mBody, aJson);
+	std::string anAccess = aParsed ? aJson.Str("access_token") : std::string();
+	if (!IsSuccess(aResponse.mStatus) || anAccess.empty())
 	{
-		if (!theWait(anInterval))
-			return aFail(Result::FAILED, "the sign-in was cancelled");
-		aWaited += anInterval;
-
-		HttpResponse aPoll = PostForm(theHttp, aClient.mTokenUrl, Form({ { "client_id", aClient.mId }, { "client_secret", aClient.mSecret },
-			{ "device_code", aCode.mDeviceCode }, { "grant_type", "urn:ietf:params:oauth:grant-type:device_code" } }));
-		if (aPoll.mStatus == 0)
-			continue;	// a dropped connection while the player signs in: just ask again
-
-		Json::Value aPollJson;
-		Json::Parse(aPoll.mBody, aPollJson);
-		std::string anAccess = aPollJson.Str("access_token");
-		if (IsSuccess(aPoll.mStatus) && !anAccess.empty())
-		{
-			theToken.mRefresh = aPollJson.Str("refresh_token");
-			if (theToken.mRefresh.empty())
-				return aFail(Result::FAILED, std::format("{} did not let the game stay signed in", aName));
-			FetchAccount(theHttp, theConfig.mProvider, anAccess, theToken);
-			if (theToken.mAccount.empty())
-				theToken.mAccount = "device-" + RandomId();		// unknown account: never reuse another sign-in's sync history
-			return Result::OK;
-		}
-
-		std::string anError = aPollJson.Str("error");
-		if (anError == "authorization_pending")
-			continue;
-		if (anError == "slow_down")
-		{
-			anInterval += 5;
-			continue;
-		}
-		if (anError == "access_denied" || anError == "authorization_declined")
-			return aFail(Result::FAILED, "the sign-in was declined");
-		if (anError == "expired_token")
-			break;
-		return aFail(Result::FAILED, std::format("signing in to {} failed: {}", aName, ErrorMessage(aPoll)));
+		// the browser came back, so Google knows the client ID: it is the secret that does not go with it
+		if (mConfig.mProvider == Provider::GOOGLE_DRIVE && aParsed && aJson.Str("error") == "invalid_client")
+			theError = "Google did not accept the client secret: enter the secret of this client ID (see the README)";
+		else
+			theError = std::format("signing in to {} failed: {}", aName, ErrorMessage(aResponse));
+		return Result::FAILED;
 	}
-	return aFail(Result::FAILED, "the code expired before the sign-in was finished, try again");
+	// Google lets the player untick the box for Drive and still sign in. No scope in the answer means all of
+	// them (RFC 6749 section 5.1).
+	if (mConfig.mProvider == Provider::GOOGLE_DRIVE && aJson.Find("scope") && !HasScope(aJson.Str("scope"), GOOGLE_SCOPE))
+	{
+		aListener->Reply(RedirectListener::Outcome::DENIED);
+		theError = "the game was not given access to your Google Drive: tick the box for it on the Google page when you sign in again";
+		return Result::FAILED;
+	}
+	theToken.mRefresh = aJson.Str("refresh_token");
+	if (theToken.mRefresh.empty())
+	{
+		theError = std::format("{} did not let the game stay signed in", aName);
+		return Result::FAILED;
+	}
+	theToken.mClient = aClient.mId;
+
+	FetchAccount(theHttp, mConfig.mProvider, anAccess, theToken);
+	if (theToken.mAccount.empty())
+		theToken.mAccount = "device-" + RandomId();		// unknown account: never reuse another sign-in's sync history
+	if (!theKeepWaiting())
+	{
+		// stopped by the player while it was fetched: the browser must not say it is done
+		theToken = Token();
+		theError = "the sign-in was cancelled";
+		return Result::FAILED;
+	}
+	// kept before the browser says that it is done, so a game closed right after that still has it
+	if (theOnSignedIn && !theOnSignedIn(theToken))
+	{
+		theToken = Token();
+		theError = "the sign-in could not be saved";
+		return Result::FAILED;
+	}
+	aListener->Reply(RedirectListener::Outcome::DONE);
+	return Result::OK;
 }
 
 }

@@ -232,8 +232,8 @@ You can customize the game features by adding options to the first `cmake` comma
 | `DO_FIX_BUGS` | `OFF` | Apply community fixes for "bugs" of official 1.2.0.1073 GOTY Edition.[^1] However, these "bugs" are usually **considered "features"** by many players. |
 | `CONSOLE` | `OFF`<br>(`ON` if `CMAKE_BUILD_TYPE` is `Debug`) | Show a console window (Windows only). |
 | `CLOUD_SAVE` | `ON`<br>(`OFF` on WebAssembly, Switch, Android, iOS and with `BUILD_STATIC`) | Build the [cloud save](#cloud-save) to WebDAV, Google Drive and OneDrive. Needs `libcurl`; when it is not found the game builds without cloud save. |
-| `CLOUD_SAVE_GOOGLE_CLIENT_ID`<br>`CLOUD_SAVE_GOOGLE_CLIENT_SECRET` | empty | Google OAuth client built into the game, so players can sign in to Google Drive without [their own client](#google-cloud-client). |
-| `CLOUD_SAVE_ONEDRIVE_CLIENT_ID` | empty | Microsoft app registration built into the game, so players can sign in to OneDrive without [their own registration](#microsoft-app-registration). |
+| `CLOUD_SAVE_GOOGLE_CLIENT_ID`<br>`CLOUD_SAVE_GOOGLE_CLIENT_SECRET` | empty | ID and secret of a Google OAuth client of the type **Desktop app**, built into the game so players can sign in to Google Drive without [their own client](#google-cloud-client). Give both or neither. |
+| `CLOUD_SAVE_ONEDRIVE_CLIENT_ID` | empty | ID of a Microsoft app registration with the redirect URI `http://localhost` under **Mobile and desktop applications**, built into the game so players can sign in to OneDrive without [their own registration](#microsoft-app-registration). |
 | `CLOUD_SAVE_TESTS` | `OFF` | Also build `cloudsync-test`, offline tests of the cloud save against simulated WebDAV, Google Drive and OneDrive servers. |
 | `BUILD_STATIC` | `OFF` | Link dependencies statically (Windows with MinGW-based toolchains, glibc-based Linux). Use a vcpkg `-static` triplet for MSVC. |
 
@@ -337,10 +337,14 @@ Tick **Enabled**, enter the server URL, username and password, then press **Sync
 These sign in through the browser instead of with a password:
 
 1. Pick the service, enter the client ID (for Google also the client secret, see below), tick **Enabled** and press **Sign In**.
-2. The game opens the sign-in page in your browser and shows a short code, which it also copies to the clipboard. Enter the code on that page, sign in and allow the access.
+2. The game opens the sign-in page in your browser, and copies its address to the clipboard in case no page opens. Sign in there and allow the access. The browser then comes back to the game by itself and says when you can close the tab. It has to be a browser on the same computer, because it comes back to an address that only this computer can reach.
 3. Once the dialog shows your account, press **Save**.
 
-The sign-in is kept in `cloudsave-google-token.txt` or `cloudsave-onedrive-token.txt` in the per-user data folder (on macOS and Linux readable only by your user account). **Sign Out** forgets it on this computer; to revoke the access itself, remove the app in your Google or Microsoft account settings. **Cancel** also takes back the service choice that **Sign In** saved, but keeps the sign-in.
+If the sign-in page shows an error instead, see [Sign-in problems](#sign-in-problems). The game waits for the browser for up to 10 minutes; **Stop Sign-In** ends the wait sooner.
+
+The sign-in is kept in `cloudsave-google-token.txt` or `cloudsave-onedrive-token.txt` in the per-user data folder (on macOS and Linux readable only by your user account). **Sign Out** forgets it on this computer; to revoke the access itself, remove the app in your Google or Microsoft account settings. **Cancel** also takes back the settings that **Sign In** saved, but keeps the sign-in for when you save them.
+
+A sign-in works only with the client it was made with: after you enter another client ID, or a new build brings another built-in one, the game asks you to sign in again. A sign-in kept by an earlier version of the game does not say which client it was made with; see [Sign-in problems](#sign-in-problems) if the game says it was made with another client ID.
 
 A build has no client of its own unless whoever made it [built one in](#built-in-client-ids); then leave the client fields empty. Otherwise create your own, which is free:
 
@@ -348,30 +352,51 @@ A build has no client of its own unless whoever made it [built one in](#built-in
 
 1. In the [Google Cloud console](https://console.cloud.google.com/), create a project and enable the **Google Drive API** for it.
 2. Set up the OAuth consent screen (Google Auth Platform): audience **External**, any app name, and under **Data Access** add the scope `https://www.googleapis.com/auth/drive.appdata`.
-3. Under **Audience**, add your Google account as a test user, or publish the app. While the app is in **Testing**, Google lets a sign-in last only 7 days, after which the game asks you to sign in again. Google may warn that the app is not verified; for your own client you can continue.
-4. Under **Clients** (**Credentials** in the older console), create an OAuth client of the type **TVs and Limited Input devices**, and enter its client ID and client secret in the game. Google requires the secret for this kind of sign-in, even though a program on your computer cannot keep it secret.
+3. Under **Audience**, press **Publish app**, so that the app is **In production**. While it is in **Testing**, only the test users you add there can sign in, and Google ends their sign-in after 7 days, after which the game asks you to sign in again. `drive.appdata` is not a sensitive scope, so a published app needs no verification by Google.
+4. Under **Clients** (**Credentials** in the older console), create an OAuth client of the type **Desktop app**; it needs no redirect URI. Enter its client ID and client secret in the game. Copy the secret right away, or download the JSON: Google shows it only when the client is created. Google requires the secret for this kind of sign-in, even though a program on your computer cannot keep it secret.
+
+A client of the type **TVs and Limited Input devices**, which earlier versions of the game used, is meant for the old sign-in with a code: create a **Desktop app** client for this one and enter its ID and secret instead. Then press **Sign Out** and **Sign In**, since a sign-in made with the old client does not work with the new one.
 
 #### Microsoft app registration
 
 1. In the [Microsoft Entra admin center](https://entra.microsoft.com/) (or the Azure portal), open **App registrations → New registration**:
    - **Name**: becomes the folder under `Apps/` in OneDrive, e.g. `PvZ Portable`.
    - **Supported account types**: **Accounts in any organizational directory and personal Microsoft accounts**. The game signs in through the `common` endpoint, which turns down a registration for personal accounts only.
-   - No redirect URI is needed.
-2. Under **Authentication**, set **Allow public client flows** to **Yes** and save.
+   - **Redirect URI**: the platform **Public client/native (mobile & desktop)** and the address `http://localhost`, exactly so: no port, no path, no `/` at the end. Microsoft ignores the port of a localhost address, so the game can listen on any free port.
+2. For a registration you already have, open **Authentication**, choose **Add a platform → Mobile and desktop applications** and add `http://localhost` as a custom redirect URI. Do not add it under **Web**: Microsoft then takes the game for a program that keeps a secret, and the sign-in fails with `AADSTS7000218`. **Allow public client flows**, which earlier versions of the game needed, is not needed any more.
 3. Under **API permissions**, add the Microsoft Graph delegated permissions `Files.ReadWrite.AppFolder` and `offline_access`.
 4. Enter the **Application (client) ID** from the **Overview** page in the game. There is no client secret.
 
 Microsoft documents `Files.ReadWrite.AppFolder` for personal Microsoft accounts and marks it as preview, so a work or school account may not be able to use it, or may need its administrator's consent.
 
+#### Sign-in problems
+
+If the sign-in page shows an error, the browser cannot come back to the game: press **Stop Sign-In**, fix the client and sign in again. Other errors do come back, and the game shows them. What the common ones mean:
+
+- Google **`redirect_uri_mismatch`**, **`invalid_request`** or **`invalid_client`**: the client is not of the type **Desktop app** (it is a web application or TV client, say), or the client ID is wrong.
+- Google says the access is blocked while the app is in **Testing**: the account is not one of the app's test users. Add it under **Audience**, or publish the app.
+- **"Google did not accept the client secret"**, when you sign in, or **"Google did not accept the client ID and secret"**, while syncing: the secret is not one of this client's, or was deleted from it. Google shows a secret only when it is made: under **Clients**, open the client, add a new secret and enter that one.
+- **"the Google Drive sign-in was made with another client ID"**: an earlier version of the game signed in with another client, such as a **TVs and Limited Input devices** one. Press **Sign Out**, then **Sign In**.
+- Microsoft **`AADSTS50011`** or **`AADSTS500113`**: `http://localhost` is not a redirect URI of the registration.
+- Microsoft **`AADSTS7000218`** or **`AADSTS9002327`**: `http://localhost` is under **Web** or **Single-page application**. Remove it there and add it under **Mobile and desktop applications**.
+- Microsoft **`AADSTS700016`**: the application (client) ID is wrong.
+- Microsoft **`AADSTS50194`** or **`AADSTS9002331`**: the supported account types are not the ones above. A new registration with the right ones is the simplest fix.
+- **"the game was not given access"**: you declined, or for Google left the box for the game's data unticked. Sign in again and allow it.
+
+Two things on your computer can get in the way:
+
+- If the browser turns `http://localhost:…` (OneDrive) into `https://` and shows an error, a site you ran on `localhost` earlier told it to always use https there (HSTS). In Chrome or Edge, delete the domain security policy of `localhost` at `chrome://net-internals/#hsts` (`edge://net-internals/#hsts`); in Firefox, use **Forget About This Site** on `localhost` in the history. Google comes back to `http://127.0.0.1` instead, and HSTS never applies to an IP address.
+- If a firewall asks whether PvZ-Portable may accept connections while you sign in, that is the game waiting for the browser. It listens only on this computer's loopback address, which other computers cannot reach. Allow it if the browser does not come back.
+
 #### Built-in client IDs
 
-To make a build that signs in without these steps, pass the client IDs to the first `cmake` command; they are compiled into the game:
+To make a build that signs in without these steps, pass the client IDs, and the secret of the Google client, to the first `cmake` command; they are compiled into the game. CMake stops if only one of the Google client ID and secret is given:
 
 ```bash
 cmake -G Ninja -B build -DCLOUD_SAVE_GOOGLE_CLIENT_ID=1234-abc.apps.googleusercontent.com -DCLOUD_SAVE_GOOGLE_CLIENT_SECRET=GOCSPX-abc -DCLOUD_SAVE_ONEDRIVE_CLIENT_ID=00000000-0000-0000-0000-000000000000
 ```
 
-A client ID entered in the game or in `cloudsave.ini` takes precedence over the built-in one.
+A client ID entered in the game or in `cloudsave.ini` takes precedence over the built-in one, and a sign-in made with the one does not count with the other.
 
 ### The settings file
 
@@ -403,7 +428,7 @@ onedrive_client_id=
 - Without a connection the game runs normally and retries later.
 - Cloud files: `manifest.txt` is the committed state and `files/` holds the save files. Do not edit them by hand.
 
-To test the protocol without any server, configure with `-DCLOUD_SAVE_TESTS=ON` and run `build/cloudsync-test`.
+To test the protocol without any server, configure with `-DCLOUD_SAVE_TESTS=ON` and run `build/cloudsync-test`. Its tests of the sign-in listener and of stopping a request need to listen on `127.0.0.1`. They are skipped where listening is not allowed, as in some sandboxes, and fail on any other error.
 
 ## Recording and Playing Back Gameplay
 

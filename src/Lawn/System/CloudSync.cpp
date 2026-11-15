@@ -13,6 +13,7 @@
 #include <ctime>
 #include <format>
 #include <fstream>
+#include <mutex>
 #include <regex>
 #include <sstream>
 #include <system_error>
@@ -253,9 +254,10 @@ bool WriteConfig(const fs::path& thePath, const Config& theConfig)
 		"# e.g. https://cloud.example.com/remote.php/dav/files/alice/ . The password is stored here as plain text: prefer an\n"
 		"# app password over your account password.\n"
 		"#\n"
-		"# Google Drive and OneDrive sign in through the browser, from the game. A build made without client IDs of its own\n"
-		"# needs them here (see the README): google_client_id and google_client_secret of a Google OAuth client of the type\n"
-		"# \"TVs and Limited Input devices\", onedrive_client_id of a Microsoft app registration that allows public client flows.\n"
+		"# Google Drive and OneDrive sign in through the browser on this computer, from the game. A build made without client\n"
+		"# IDs of its own needs them here (see the README): google_client_id and google_client_secret of a Google OAuth client\n"
+		"# of the type \"Desktop app\", onedrive_client_id of a Microsoft app registration with the platform \"Mobile and\n"
+		"# desktop applications\" and the redirect URI http://localhost .\n"
 		"enabled={}\n"
 		"provider={}\n"
 		"url={}\n"
@@ -289,6 +291,17 @@ std::string GoogleClientSecret(const Config& theConfig)
 std::string OneDriveClientId(const Config& theConfig)
 {
 	return theConfig.mOneDriveClientId.empty() ? PVZP_ONEDRIVE_CLIENT_ID : theConfig.mOneDriveClientId;
+}
+
+std::string ClientId(const Config& theConfig)
+{
+	switch (theConfig.mProvider)
+	{
+	case Provider::GOOGLE_DRIVE:	return GoogleClientId(theConfig);
+	case Provider::ONEDRIVE:		return OneDriveClientId(theConfig);
+	case Provider::WEBDAV:			break;
+	}
+	return std::string();
 }
 
 bool HasBuiltInClientId(Provider theProvider)
@@ -456,11 +469,19 @@ namespace
 
 class CurlTransport : public Transport
 {
-	CURL*	mCurl = nullptr;
+	CURL*					mCurl = nullptr;
+	std::function<bool()>	mStop;
 
 public:
-	CurlTransport() { mCurl = curl_easy_init(); }
+	explicit CurlTransport(std::function<bool()> theStop) : mStop(std::move(theStop)) { mCurl = curl_easy_init(); }
 	~CurlTransport() override { if (mCurl) curl_easy_cleanup(mCurl); }
+
+#if LIBCURL_VERSION_NUM >= 0x072000
+	static int OnProgress(void* theUser, curl_off_t, curl_off_t, curl_off_t, curl_off_t)
+	{
+		return (*static_cast<const std::function<bool()>*>(theUser))() ? 1 : 0;
+	}
+#endif
 
 	static size_t OnBody(char* theData, size_t theSize, size_t theCount, void* theUser)
 	{
@@ -537,6 +558,14 @@ public:
 		curl_easy_setopt(mCurl, CURLOPT_WRITEDATA, &aResponse.mBody);
 		curl_easy_setopt(mCurl, CURLOPT_HEADERFUNCTION, &CurlTransport::OnHeader);
 		curl_easy_setopt(mCurl, CURLOPT_HEADERDATA, &aResponse.mETag);
+#if LIBCURL_VERSION_NUM >= 0x072000
+		if (mStop)
+		{
+			curl_easy_setopt(mCurl, CURLOPT_NOPROGRESS, 0L);
+			curl_easy_setopt(mCurl, CURLOPT_XFERINFOFUNCTION, &CurlTransport::OnProgress);
+			curl_easy_setopt(mCurl, CURLOPT_XFERINFODATA, &mStop);
+		}
+#endif
 
 		if (theRequest.mMethod == "GET")
 			curl_easy_setopt(mCurl, CURLOPT_HTTPGET, 1L);
@@ -558,7 +587,7 @@ public:
 		curl_slist_free_all(aHeaders);
 		if (aCode != CURLE_OK)
 		{
-			aResponse.mError = curl_easy_strerror(aCode);
+			aResponse.mError = aCode == CURLE_ABORTED_BY_CALLBACK ? "stopped" : curl_easy_strerror(aCode);
 			return aResponse;
 		}
 		curl_easy_getinfo(mCurl, CURLINFO_RESPONSE_CODE, &aResponse.mStatus);
@@ -672,9 +701,9 @@ public:
 
 }
 
-std::unique_ptr<Transport> MakeCurlTransport()
+std::unique_ptr<Transport> MakeCurlTransport(std::function<bool()> theStop)
 {
-	return std::make_unique<CurlTransport>();
+	return std::make_unique<CurlTransport>(std::move(theStop));
 }
 
 std::unique_ptr<Store> MakeWebDavStore(const Config& theConfig, std::unique_ptr<Transport> theTransport)
@@ -695,16 +724,16 @@ std::unique_ptr<Store> MakeStore(const Config& theConfig, const fs::path& theSta
 	return MakeWebDavStore(theConfig, std::move(theTransport));
 }
 
-fs::path TokenPath(const fs::path& theStateDir, Provider theProvider)
+namespace
 {
-	return theStateDir / std::format("cloudsave-{}-token.txt", ProviderKey(theProvider));
-}
 
-bool LoadToken(const fs::path& theStateDir, Provider theProvider, Token& theToken)
+std::mutex gTokenMutex;		// for all the token files
+
+bool ReadToken(const fs::path& thePath, Token& theToken)
 {
 	theToken = Token();
 	std::string aText;
-	if (!ReadFile(TokenPath(theStateDir, theProvider), aText))
+	if (!ReadFile(thePath, aText))
 		return false;
 
 	std::istringstream aStream(aText);
@@ -723,20 +752,59 @@ bool LoadToken(const fs::path& theStateDir, Provider theProvider, Token& theToke
 			theToken.mAccount = aValue;
 		else if (aKey == "name")
 			theToken.mAccountName = aValue;
+		else if (aKey == "client")
+			theToken.mClient = aValue;
 	}
 	return !theToken.mRefresh.empty();
 }
 
-bool SaveToken(const fs::path& theStateDir, Provider theProvider, const Token& theToken)
+// Earlier versions of the game skip the client line, as any key they do not know.
+bool WriteToken(const fs::path& thePath, const Token& theToken)
 {
 	std::error_code anError;
-	fs::create_directories(theStateDir, anError);
-	return WriteFileAtomic(TokenPath(theStateDir, theProvider), std::format("{}\naccount {}\nname {}\nrefresh {}\n",
-		TOKEN_HEADER, OneLine(theToken.mAccount), OneLine(theToken.mAccountName), OneLine(theToken.mRefresh)), true);
+	fs::create_directories(thePath.parent_path(), anError);
+	return WriteFileAtomic(thePath, std::format("{}\naccount {}\nname {}\nclient {}\nrefresh {}\n", TOKEN_HEADER, OneLine(theToken.mAccount),
+		OneLine(theToken.mAccountName), OneLine(theToken.mClient), OneLine(theToken.mRefresh)), true);
+}
+
+}
+
+fs::path TokenPath(const fs::path& theStateDir, Provider theProvider)
+{
+	return theStateDir / std::format("cloudsave-{}-token.txt", ProviderKey(theProvider));
+}
+
+bool LoadToken(const fs::path& theStateDir, Provider theProvider, Token& theToken)
+{
+	std::lock_guard aLock(gTokenMutex);
+	return ReadToken(TokenPath(theStateDir, theProvider), theToken);
+}
+
+bool LoadTokenFor(const fs::path& theStateDir, const Config& theConfig, Token& theToken)
+{
+	if (LoadToken(theStateDir, theConfig.mProvider, theToken) && (theToken.mClient.empty() || theToken.mClient == ClientId(theConfig)))
+		return true;
+	theToken = Token();
+	return false;
+}
+
+bool SaveToken(const fs::path& theStateDir, Provider theProvider, const Token& theToken)
+{
+	std::lock_guard aLock(gTokenMutex);
+	return WriteToken(TokenPath(theStateDir, theProvider), theToken);
+}
+
+bool ReplaceToken(const fs::path& theStateDir, Provider theProvider, const std::string& theOld, const Token& theToken)
+{
+	std::lock_guard aLock(gTokenMutex);
+	fs::path aPath = TokenPath(theStateDir, theProvider);
+	Token aSaved;
+	return ReadToken(aPath, aSaved) && aSaved.mRefresh == theOld && WriteToken(aPath, theToken);
 }
 
 void DeleteToken(const fs::path& theStateDir, Provider theProvider)
 {
+	std::lock_guard aLock(gTokenMutex);
 	std::error_code anError;
 	fs::remove(TokenPath(theStateDir, theProvider), anError);
 }

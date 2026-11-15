@@ -83,19 +83,6 @@ const char* ClientHint(CloudSync::Provider theProvider)
 		return "Enter the client ID and client secret of your Google Cloud app (see the README), then Sign In.";
 	return "Enter the application (client) ID of your Microsoft app registration (see the README), then Sign In.";
 }
-
-// "https://www.google.com/device" -> "google.com/device", shorter to read and to type on another device
-std::string SiteText(std::string_view theUrl)
-{
-	for (std::string_view aPrefix : { "https://", "http://" })
-		if (theUrl.starts_with(aPrefix))
-			theUrl.remove_prefix(aPrefix.size());
-	if (theUrl.starts_with("www."))
-		theUrl.remove_prefix(4);
-	if (theUrl.ends_with("/"))
-		theUrl.remove_suffix(1);
-	return std::string(theUrl);
-}
 }
 
 CloudSaveEditWidget::CloudSaveEditWidget(int theId, CloudSaveDialog* theOwner) : LawnEditWidget(theId, theOwner, theOwner), mOwner(theOwner)
@@ -141,8 +128,7 @@ CloudSaveDialog::CloudSaveDialog(LawnApp* theApp) : LawnDialog(
 	mDraft(CloudSave::GetSettings()),
 	mOpened(mDraft),
 	mProvider(mDraft.mProvider),
-	mSignIn(CloudSave::GetSignIn()),
-	mSeenCodeSerial(mSignIn.mCodeSerial)	// a code handed out before the dialog opened does not open the browser again
+	mSignIn(CloudSave::GetSignIn())
 {
 	for (int i = 0; i < NUM_FIELDS; i++)
 		mFields[i] = std::make_unique<CloudSaveEditWidget>(i, this);
@@ -159,6 +145,8 @@ CloudSaveDialog::CloudSaveDialog(LawnApp* theApp) : LawnDialog(
 	mSignedIn = CloudSave::IsSignedIn(mProvider);
 	UpdateButtons();
 	ShowIdleStatus();
+	if (mSignIn.mPhase == Phase::FAILED && mSignIn.mProvider == mProvider)
+		ShowMessage(mSignIn.mMessage);		// a sign-in that went on after Save, and failed since
 	mVerticalCenterText = false;
 
 	int aContentWidth = LABEL_WIDTH + FIELD_WIDTH + 16;
@@ -166,7 +154,7 @@ CloudSaveDialog::CloudSaveDialog(LawnApp* theApp) : LawnDialog(
 	CalcSize(std::max(aContentWidth - mHeaderFont->StringWidth(mDialogHeader), 0), aContentHeight);
 }
 
-// A sign-in still running goes on without the dialog after Save, so a code typed in just before still counts.
+// A sign-in still running goes on without the dialog after Save: the browser can still come back to it.
 CloudSaveDialog::~CloudSaveDialog() = default;
 
 void CloudSaveDialog::Show(LawnApp* theApp)
@@ -285,9 +273,41 @@ std::string CloudSaveDialog::IdleStatus() const
 	return aSaved ? anAccount + "\n" + CloudSave::StatusText() : anAccount;
 }
 
+// The address also goes to the clipboard: the browser may not open, or open behind the game or in another profile.
+void CloudSaveDialog::OpenSignInPage()
+{
+	mPageCopied = SDL_SetClipboardText(mSignIn.mPage.c_str()) == 0;
+	if (mSignIn.mPage.starts_with("https://"))
+		SDL_OpenURL(mSignIn.mPage.c_str());
+}
+
 bool CloudSaveDialog::SigningIn() const
 {
-	return mSignIn.mPhase == Phase::STARTING || mSignIn.mPhase == Phase::WAITING;
+	return mSignIn.mPhase == Phase::WAITING;
+}
+
+std::string CloudSaveDialog::SignInText() const
+{
+	if (mStatusIsMessage)
+		return mSignIn.mMessage + "\n" + mStatus;	// such as why a button did nothing, in place of the hint
+	if (mSignIn.mAnswered)
+		return mSignIn.mMessage;
+	return mSignIn.mMessage + (mPageCopied ? "\nNo page? Paste the address the game copied into your browser." :
+		"\nNo page? Press Stop Sign-In, then Sign In again.");
+}
+
+// The end of a sign-in, seen in Update() or found by Stop Sign-In when it was too late to stop it.
+void CloudSaveDialog::ShowSignInEnd()
+{
+	if (mSignIn.mPhase == Phase::DONE)
+	{
+		mSignedIn = CloudSave::IsSignedIn(mProvider);
+		ShowIdleStatus();
+	}
+	else if (mSignIn.mPhase == Phase::FAILED)
+		ShowMessage(mSignIn.mMessage);
+	else
+		ShowMessage("Sign-in stopped.");
 }
 
 void CloudSaveDialog::Resize(int theX, int theY, int theWidth, int theHeight)
@@ -358,29 +378,12 @@ void CloudSaveDialog::Update()
 	LawnDialog::Update();
 
 	CloudSave::SignInState aSignIn = CloudSave::GetSignIn();
-	if (aSignIn.mCodeSerial != mSeenCodeSerial)
-	{
-		mSeenCodeSerial = aSignIn.mCodeSerial;
-		if (aSignIn.mPhase == Phase::WAITING)
-		{
-			// the code can be pasted into the page that opens, or typed in on another device
-			SDL_SetClipboardText(aSignIn.mUserCode.c_str());
-			if (aSignIn.mUrl.starts_with("https://"))
-				SDL_OpenURL(aSignIn.mUrl.c_str());
-		}
-	}
-
 	bool aChanged = aSignIn.mPhase != mSignIn.mPhase;
 	mSignIn = std::move(aSignIn);
 	if (aChanged)
 	{
-		if (mSignIn.mPhase == Phase::DONE)
-		{
-			mSignedIn = CloudSave::IsSignedIn(mProvider);
-			ShowIdleStatus();
-		}
-		else if (mSignIn.mPhase == Phase::FAILED)
-			ShowMessage(mSignIn.mMessage);
+		if (mSignIn.mPhase == Phase::DONE || mSignIn.mPhase == Phase::FAILED)
+			ShowSignInEnd();
 		UpdateButtons();
 	}
 
@@ -404,19 +407,7 @@ void CloudSaveDialog::Draw(Graphics* g)
 	int aLeft = mBackgroundInsets.mLeft + mContentInsets.mLeft;
 	int aWidth = mWidth - aLeft - mBackgroundInsets.mRight - mContentInsets.mRight;
 	int aHeight = mStatusBottom - mStatusY;
-	if (mSignIn.mPhase == Phase::WAITING)
-	{
-		// what to do, the code in big letters, and where else it is
-		constexpr int CODE_BLOCK_HEIGHT = 80;
-		int aY = mStatusY + std::max(0, (aHeight - CODE_BLOCK_HEIGHT) / 2);
-		int aCenterX = aLeft + aWidth / 2;
-		PvzpDrawString(g, std::format("Go to {} and enter:", SiteText(mSignIn.mUrl)), aCenterX, aY + 18, FONT_DWARVENTODCRAFT15, mColors.mLines, DrawStringJustification::DS_ALIGN_CENTER);
-		PvzpDrawString(g, mSignIn.mUserCode, aCenterX, aY + 52, FONT_DWARVENTODCRAFT24, mColors.mLines, DrawStringJustification::DS_ALIGN_CENTER);
-		PvzpDrawString(g, "The code is on the clipboard too.", aCenterX, aY + 74, FONT_DWARVENTODCRAFT15, mColors.mLines, DrawStringJustification::DS_ALIGN_CENTER);
-		return;
-	}
-
-	const std::string& aText = SigningIn() ? mSignIn.mMessage : mStatus;
+	std::string aText = SigningIn() ? SignInText() : mStatus;
 	PvzpDrawStringWrapped(g, aText, Rect(aLeft, mStatusY + 8, aWidth, std::max(aHeight - 8, 0)), FONT_DWARVENTODCRAFT15, mColors.mLines, DrawStringJustification::DS_ALIGN_CENTER);
 }
 
@@ -500,6 +491,7 @@ void CloudSaveDialog::Close(bool theCancel)
 		CloudSave::CancelSignIn();
 	if (theCancel && mSavedForSignIn)
 		CloudSave::ApplySettings(mOpened);
+	CloudSave::ClearSignIn();	// shown here already; one still running is shown when it ends, here or in the next dialog
 	mApp->KillDialog(mId);
 }
 
@@ -529,7 +521,7 @@ void CloudSaveDialog::ButtonDepress(int theId)
 		{
 			CloudSave::CancelSignIn();
 			mSignIn = CloudSave::GetSignIn();
-			ShowMessage("Sign-in stopped.");
+			ShowSignInEnd();
 		}
 		else if (mSignedIn)
 		{
@@ -539,10 +531,19 @@ void CloudSaveDialog::ButtonDepress(int theId)
 		}
 		else if (Apply(true))
 		{
-			if (CloudSave::StartSignIn(mProvider))
-				mSignIn = CloudSave::GetSignIn();
-			else
+			if (!CloudSave::StartSignIn(mProvider))
 				ShowMessage("The last sign-in is still stopping. Try again in a moment.");
+			else
+			{
+				mSignIn = CloudSave::GetSignIn();
+				if (mSignIn.mPhase == Phase::WAITING)
+				{
+					ShowIdleStatus();	// no message from before in place of the hint
+					OpenSignInPage();
+				}
+				else if (mSignIn.mPhase == Phase::FAILED)
+					ShowMessage(mSignIn.mMessage);
+			}
 		}
 		UpdateButtons();
 		break;

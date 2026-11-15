@@ -5,16 +5,21 @@
  */
 
 // Offline tests of the cloud save protocol: the sync engine against in-memory WebDAV, Google Drive and OneDrive
-// servers that answer the way the real ones are documented to. Nothing here touches the network.
+// servers that answer the way the real ones are documented to. Nothing here leaves this computer: the only sockets
+// are those of the sign-in listener's test, on the loopback address.
 //
 //   cmake -B build -DCLOUD_SAVE_TESTS=ON && cmake --build build --target cloudsync-test && build/cloudsync-test
 
 #include "CloudSync.h"
 #include "CloudJson.h"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
-#include <deque>
+#include <csignal>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -24,8 +29,26 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
+#endif
 
 using namespace CloudSync;
 namespace fs = std::filesystem;
@@ -38,6 +61,7 @@ namespace
 int gChecks = 0;
 int gFailures = 0;
 std::string gTest;
+std::string gSkipped;	// why the current test could not run here
 
 std::string Show(const std::string& theText) { return "\"" + theText + "\""; }
 std::string Show(const char* theText) { return Show(std::string(theText)); }
@@ -220,6 +244,172 @@ std::unique_ptr<Transport> LinkTo(Server& theServer)
 	return std::make_unique<Link>(theServer);
 }
 
+// --- OAuth ---
+
+// An authorization code the consent screen handed out, and what it was asked for with.
+struct Grant
+{
+	std::string	mChallenge;
+	std::string	mRedirect;
+	bool		mOffline = true;
+};
+
+// theAddress is thePrefix followed by a port, such as http://127.0.0.1:49152.
+bool IsLoopbackAddress(const std::string& theAddress, std::string_view thePrefix)
+{
+	return theAddress.starts_with(thePrefix) && theAddress.size() > thePrefix.size() &&
+		std::all_of(theAddress.begin() + static_cast<ptrdiff_t>(thePrefix.size()), theAddress.end(),
+			[](char theChar) { return std::isdigit(static_cast<unsigned char>(theChar)) != 0; });
+}
+
+// The request line target a browser sends for theUrl: its path and query, "/" for an address with no path, "" for
+// no address at all (a provider that showed an error page instead).
+std::string Target(const std::string& theUrl)
+{
+	if (theUrl.empty())
+		return "";
+	size_t aScheme = theUrl.find("://");
+	size_t aStart = theUrl.find_first_of("/?", aScheme == std::string::npos ? 0 : aScheme + 3);
+	if (aStart == std::string::npos)
+		return "/";
+	std::string aTarget = theUrl.substr(aStart);
+	return aTarget[0] == '?' ? "/" + aTarget : aTarget;
+}
+
+// Plays the player's browser for a sign-in: what the game's listener gets once the player answered.
+struct Browser
+{
+	int							mPort = 49152;
+	std::string					mOpenError;		// the listener cannot be opened
+	std::string					mWaitError;		// the listener fails while it waits
+	std::vector<std::string>	mRequests;		// request targets, such as "/?state=...&code=..."
+	int							mOpens = 0;
+	std::vector<std::string>	mShown;			// what the browser that came back was shown in the end: done, denied, failed
+};
+
+// What theBrowser was shown, in order: "done", "denied,failed" and the like.
+std::string Shown(const Browser& theBrowser)
+{
+	std::string aText;
+	for (const std::string& aPage : theBrowser.mShown)
+		aText += (aText.empty() ? "" : ",") + aPage;
+	return aText;
+}
+
+std::string OutcomeName(RedirectListener::Outcome theOutcome)
+{
+	switch (theOutcome)
+	{
+	case RedirectListener::Outcome::DONE:	return "done";
+	case RedirectListener::Outcome::DENIED:	return "denied";
+	case RedirectListener::Outcome::FAILED:	return "failed";
+	}
+	return "?";
+}
+
+class FakeListener final : public RedirectListener
+{
+	Browser&	mBrowser;
+	bool		mAnswering = false;		// the browser that came back waits for Reply
+
+public:
+	explicit FakeListener(Browser& theBrowser) : mBrowser(theBrowser) {}
+	~FakeListener() override { Reply(Outcome::FAILED); }	// as the real one does
+
+	bool Open(std::string& theError) override
+	{
+		Reply(Outcome::FAILED);
+		mBrowser.mOpens++;
+		theError = mBrowser.mOpenError;
+		return theError.empty();
+	}
+
+	void Reply(Outcome theOutcome) override
+	{
+		if (!mAnswering)
+			return;
+		mAnswering = false;
+		mBrowser.mShown.push_back(OutcomeName(theOutcome));
+	}
+
+	int Port() const override
+	{
+		return mBrowser.mPort;
+	}
+
+	// Like the real one, only an answer to "/" with the state of this sign-in counts.
+	bool Wait(const std::string& theState, Query& theQuery, const std::function<bool()>& theKeepWaiting, std::string& theError) override
+	{
+		theQuery.clear();
+		theError.clear();
+		for (const std::string& aRequest : mBrowser.mRequests)
+		{
+			if (!theKeepWaiting())
+				return false;
+			Url aUrl = ParseUrl(aRequest);
+			if (aUrl.mPath == "/" && (aUrl.mQuery.contains("code") || aUrl.mQuery.contains("error")) && aUrl.mQuery["state"] == theState)
+			{
+				theQuery = aUrl.mQuery;
+				mAnswering = true;
+				return true;
+			}
+		}
+		if (!mBrowser.mWaitError.empty())
+		{
+			theError = mBrowser.mWaitError;
+			return false;
+		}
+		auto aGiveUp = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (theKeepWaiting())
+		{
+			if (std::chrono::steady_clock::now() > aGiveUp)
+			{
+				Report(false, __LINE__, "the sign-in kept waiting for a browser that sent nothing more");
+				return false;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		return false;
+	}
+};
+
+// What a sign-in says when the browser never came back, as when the provider showed an error page instead.
+const std::string NO_BROWSER = "the browser did not come back in time; if the sign-in page showed an error, check the client settings (see the README)";
+
+// A sign-in with theConfig whose browser comes back with what theAnswer makes of the sign-in page ("": nothing, as
+// when the provider shows an error on its own page). theShown gets what that browser was shown in the end, "" when
+// it did not come back.
+Result SignInWith(Transport& theHttp, const Config& theConfig, const std::function<std::string(const std::string& thePage)>& theAnswer,
+	Token& theToken, std::string& theError, std::string* theShown = nullptr, std::chrono::seconds theTimeLimit = std::chrono::minutes(10))
+{
+	Browser aBrowser;
+	Result aResult = Result::FAILED;
+	{
+		BrowserSignIn aSignIn(theConfig, std::make_unique<FakeListener>(aBrowser));
+		std::string aPage;
+		aResult = aSignIn.Start(aPage, theError);
+		if (aResult == Result::OK)
+		{
+			std::string aRequest = theAnswer(aPage);
+			if (!aRequest.empty())
+				aBrowser.mRequests.push_back(aRequest);
+			aResult = aSignIn.Finish(theHttp, [] { return true; }, nullptr, nullptr, theToken, theError, theTimeLimit);
+		}
+	}
+	if (theShown)
+		*theShown = Shown(aBrowser);
+	return aResult;
+}
+
+// The answer of a browser whose player said no to the game, or that the provider sent back theError.
+std::string Refusal(const std::string& thePage, const std::string& theError, const std::string& theDescription = "")
+{
+	std::string aRequest = std::format("/?error={}&state={}", UrlEscape(theError), UrlEscape(ParseUrl(thePage).mQuery["state"]));
+	if (!theDescription.empty())
+		aRequest += "&error_description=" + UrlEscape(theDescription);
+	return aRequest;
+}
+
 // --- WebDAV ---
 
 struct DavServer : Server
@@ -352,9 +542,13 @@ struct GoogleServer : Server
 	std::set<std::string>		mAccessTokens;
 	std::set<std::string>		mRefreshTokens;
 	int							mSerial = 0;
-	std::deque<std::string>		mPolls;		// answers to the device code polls: pending, slow_down, denied, expired, ok
+	std::map<std::string, Grant>	mCodes;		// authorization codes not redeemed yet
+	std::set<std::string>		mForeignRefresh;		// refresh tokens issued to another client
+	bool						mNoRefresh = false;		// answers a code without a refresh token
 	int							mRefreshes = 0;
 	size_t						mPageSize = 1000;
+	std::string					mClientType = "Desktop app";	// as created in the Google Cloud console
+	std::string					mGranted = "https://www.googleapis.com/auth/drive.appdata";	// what the player ticked
 
 	std::string FileJson(const File& theFile) const
 	{
@@ -377,34 +571,52 @@ struct GoogleServer : Server
 		return aToken;
 	}
 
+	// The consent screen in the browser: the player picks an account and allows the game. Returns the address the
+	// browser is sent back to, or "" for a request Google shows an error page for instead.
+	std::string Authorize(const std::string& thePage)
+	{
+		Url aUrl = ParseUrl(thePage);
+		std::map<std::string, std::string>& aQuery = aUrl.mQuery;
+		// Desktop app clients may use any port of a loopback address. Another type of client, such as the "TVs and
+		// Limited Input devices" one of the device flow, gets an error page; so does a client ID Google does not know.
+		if (aUrl.mPath != "https://accounts.google.com/o/oauth2/v2/auth" || aQuery["client_id"] != mClientId || mClientType != "Desktop app" ||
+			!IsLoopbackAddress(aQuery["redirect_uri"], "http://127.0.0.1:") || aQuery["response_type"] != "code" ||
+			aQuery["scope"] != "https://www.googleapis.com/auth/drive.appdata" || aQuery["code_challenge_method"] != "S256" ||
+			aQuery["code_challenge"].size() != 43 || aQuery["state"].empty())
+			return "";
+		std::string aCode = std::format("4/g-code-{}", ++mSerial);
+		mCodes[aCode] = Grant{ aQuery["code_challenge"], aQuery["redirect_uri"], aQuery["access_type"] == "offline" };
+		return std::format("{}?state={}&code={}&scope={}", aQuery["redirect_uri"], UrlEscape(aQuery["state"]), UrlEscape(aCode),
+			UrlEscape(aQuery["scope"]));
+	}
+
 	HttpResponse Token(const HttpRequest& theRequest)
 	{
 		auto aForm = ParsePairs(Body(theRequest));
 		if (aForm["client_id"] != mClientId || aForm["client_secret"] != mSecret)
 			return Answer(401, R"({"error":"invalid_client","error_description":"Unauthorized"})");
 
-		if (aForm["grant_type"] == "urn:ietf:params:oauth:grant-type:device_code")
+		if (aForm["grant_type"] == "authorization_code")
 		{
-			if (aForm["device_code"] != "g-device")
+			auto aGrant = mCodes.find(aForm["code"]);
+			if (aGrant == mCodes.end())
 				return Answer(400, R"({"error":"invalid_grant","error_description":"Malformed auth code."})");
-			std::string anAnswer = mPolls.empty() ? "pending" : mPolls.front();
-			if (!mPolls.empty())
-				mPolls.pop_front();
-			if (anAnswer == "pending")
-				return Answer(428, R"({"error":"authorization_pending","error_description":"Precondition Required"})");
-			if (anAnswer == "slow_down")
-				return Answer(403, R"({"error":"slow_down","error_description":"Forbidden"})");
-			if (anAnswer == "denied")
-				return Answer(403, R"({"error":"access_denied","error_description":"Forbidden"})");
-			if (anAnswer == "expired")
-				return Answer(400, R"({"error":"expired_token","error_description":"Bad Request"})");
+			Grant aDone = aGrant->second;
+			mCodes.erase(aGrant);	// good for one try
+			if (aForm["redirect_uri"] != aDone.mRedirect)
+				return Answer(400, R"({"error":"redirect_uri_mismatch","error_description":"Bad Request"})");
+			if (Base64Url(Sha256(aForm["code_verifier"])) != aDone.mChallenge)
+				return Answer(400, R"({"error":"invalid_grant","error_description":"Invalid code verifier."})");
 			std::string anAccess = std::format("g-access-{}", ++mSerial);
 			mAccessTokens.insert(anAccess);
-			return Answer(200, std::format(R"({{"access_token":"{}","expires_in":3599,"refresh_token":"{}","scope":"https://www.googleapis.com/auth/drive.appdata","token_type":"Bearer"}})",
-				anAccess, IssueRefresh()));
+			std::string aRefresh = aDone.mOffline && !mNoRefresh ? std::format(R"("refresh_token":"{}",)", IssueRefresh()) : "";
+			return Answer(200, std::format(R"({{"access_token":"{}","expires_in":3599,{}"scope":{},"token_type":"Bearer"}})",
+				anAccess, aRefresh, Json::Quote(mGranted)));
 		}
 		if (aForm["grant_type"] == "refresh_token")
 		{
+			if (mForeignRefresh.contains(aForm["refresh_token"]))
+				return Answer(400, R"({"error":"unauthorized_client","error_description":"Unauthorized"})");
 			if (!mRefreshTokens.contains(aForm["refresh_token"]))
 				return Answer(400, R"({"error":"invalid_grant","error_description":"Token has been expired or revoked."})");
 			mRefreshes++;
@@ -476,15 +688,6 @@ struct GoogleServer : Server
 	HttpResponse Handle(const HttpRequest& theRequest) override
 	{
 		Url aUrl = ParseUrl(theRequest.mUrl);
-		if (aUrl.mPath == "https://oauth2.googleapis.com/device/code")
-		{
-			auto aForm = ParsePairs(Body(theRequest));
-			if (aForm["client_id"] != mClientId)
-				return Answer(401, R"({"error":"invalid_client","error_description":"The OAuth client was not found."})");
-			if (aForm["scope"] != "https://www.googleapis.com/auth/drive.appdata")
-				return Answer(400, R"({"error":"invalid_scope"})");
-			return Answer(200, R"({"device_code":"g-device","user_code":"GQVQ-JKEC","expires_in":1800,"interval":5,"verification_url":"https://www.google.com/device"})");
-		}
 		if (aUrl.mPath == "https://oauth2.googleapis.com/token")
 			return Token(theRequest);
 
@@ -577,11 +780,15 @@ struct OneDriveServer : Server
 	std::set<std::string>				mAccessTokens;
 	std::set<std::string>				mRefreshTokens;	// each refresh replaces the token it was made with
 	int									mSerial = 0;
-	std::deque<std::string>				mPolls;
+	std::map<std::string, Grant>		mCodes;			// authorization codes not redeemed yet
 	int									mRefreshes = 0;
 	bool								mConflictAtUpload = true;	// conflictBehavior "fail" is checked when the upload completes
 	int									mNextTag = 1;
 	int									mTokensOnPreAuthorized = 0;	// requests to upload or download addresses that carried a token
+	// the app registration: the platform its redirect URI is under, and whether http://localhost is that URI
+	std::string							mPlatform = "Mobile and desktop applications";
+	bool								mLocalhost = true;
+	std::string							mRedeemedScope = "none";	// the scope of the last code redeemed, "none" for no scope
 
 	std::string ETag(const Item& theItem) const
 	{
@@ -595,6 +802,24 @@ struct OneDriveServer : Server
 		return aToken;
 	}
 
+	// The sign-in page in the browser: the player picks an account and allows the game. Returns the address the
+	// browser is sent back to, or "" for a request Microsoft shows an error page for instead.
+	std::string Authorize(const std::string& thePage)
+	{
+		Url aUrl = ParseUrl(thePage);
+		std::map<std::string, std::string>& aQuery = aUrl.mQuery;
+		// Any port of the http://localhost registered matches. A redirect URI that is not registered (AADSTS50011) and
+		// an unknown client ID (AADSTS700016) get an error page.
+		if (aUrl.mPath != "https://login.microsoftonline.com/common/oauth2/v2.0/authorize" || aQuery["client_id"] != mClientId || !mLocalhost ||
+			!IsLoopbackAddress(aQuery["redirect_uri"], "http://localhost:") || aQuery["response_type"] != "code" ||
+			aQuery["response_mode"] != "query" || aQuery["scope"] != "Files.ReadWrite.AppFolder offline_access" ||
+			aQuery["code_challenge_method"] != "S256" || aQuery["code_challenge"].size() != 43 || aQuery["state"].empty())
+			return "";
+		std::string aCode = std::format("M.C5_BAY.2.U.m-code-{}", ++mSerial);
+		mCodes[aCode] = Grant{ aQuery["code_challenge"], aQuery["redirect_uri"] };
+		return std::format("{}/?code={}&state={}", aQuery["redirect_uri"], UrlEscape(aCode), UrlEscape(aQuery["state"]));
+	}
+
 	HttpResponse Token(const HttpRequest& theRequest)
 	{
 		auto aForm = ParsePairs(Body(theRequest));
@@ -602,18 +827,22 @@ struct OneDriveServer : Server
 			return Answer(400, R"({"error":"unauthorized_client","error_description":"AADSTS700016: Application not found."})");
 		if (aForm.contains("client_secret"))
 			return Answer(400, R"({"error":"invalid_request","error_description":"AADSTS90023: Public clients can't send a client secret."})");
+		// a redirect URI under "Web" makes the app a confidential client, which has to prove itself
+		if (mPlatform == "Web")
+			return Answer(401, "{\"error\":\"invalid_client\",\"error_description\":\"AADSTS7000218: The request body must contain the following parameter: 'client_assertion' or 'client_secret'.\\r\\nTrace ID: 3\\r\\nCorrelation ID: 4\"}");
 
-		if (aForm["grant_type"] == "urn:ietf:params:oauth:grant-type:device_code")
+		if (aForm["grant_type"] == "authorization_code")
 		{
-			std::string anAnswer = mPolls.empty() ? "pending" : mPolls.front();
-			if (!mPolls.empty())
-				mPolls.pop_front();
-			if (anAnswer == "pending")
-				return Answer(400, "{\"error\":\"authorization_pending\",\"error_description\":\"AADSTS70016: OAuth 2.0 device flow error. Authorization is pending.\\r\\nTrace ID: 1\\r\\nCorrelation ID: 2\"}");
-			if (anAnswer == "denied")
-				return Answer(400, R"({"error":"authorization_declined","error_description":"AADSTS70000: The user declined."})");
-			if (anAnswer == "expired")
-				return Answer(400, R"({"error":"expired_token","error_description":"AADSTS70019: Verification code expired."})");
+			mRedeemedScope = aForm.contains("scope") ? aForm["scope"] : "none";
+			auto aGrant = mCodes.find(aForm["code"]);
+			if (aGrant == mCodes.end())
+				return Answer(400, "{\"error\":\"invalid_grant\",\"error_description\":\"AADSTS70000: The provided value for the 'code' parameter is not valid.\\r\\nTrace ID: 1\\r\\nCorrelation ID: 2\"}");
+			Grant aDone = aGrant->second;
+			mCodes.erase(aGrant);	// good for one try
+			if (aForm["redirect_uri"] != aDone.mRedirect)
+				return Answer(400, R"({"error":"invalid_grant","error_description":"The redirect URI does not match the one the code was issued for."})");
+			if (Base64Url(Sha256(aForm["code_verifier"])) != aDone.mChallenge)
+				return Answer(400, R"({"error":"invalid_grant","error_description":"AADSTS501481: The Code_Verifier does not match the code_challenge supplied in the authorization request."})");
 			std::string anAccess = std::format("m-access-{}", ++mSerial);
 			mAccessTokens.insert(anAccess);
 			return Answer(200, std::format(R"({{"token_type":"Bearer","scope":"Files.ReadWrite.AppFolder","expires_in":3600,"access_token":"{}","refresh_token":"{}"}})", anAccess, IssueRefresh()));
@@ -677,13 +906,6 @@ struct OneDriveServer : Server
 	HttpResponse Handle(const HttpRequest& theRequest) override
 	{
 		Url aUrl = ParseUrl(theRequest.mUrl);
-		if (aUrl.mPath == "https://login.microsoftonline.com/common/oauth2/v2.0/devicecode")
-		{
-			auto aForm = ParsePairs(Body(theRequest));
-			if (aForm["client_id"] != mClientId || aForm["scope"] != "Files.ReadWrite.AppFolder offline_access")
-				return Answer(400, R"({"error":"invalid_request","error_description":"AADSTS900144: Bad request."})");
-			return Answer(200, R"({"user_code":"ABCD2345","device_code":"m-device","verification_uri":"https://microsoft.com/devicelogin","expires_in":900,"interval":5,"message":"To sign in, use a web browser."})");
-		}
 		if (aUrl.mPath == "https://login.microsoftonline.com/common/oauth2/v2.0/token")
 			return Token(theRequest);
 
@@ -922,16 +1144,46 @@ void TestTokenFile()
 	fs::path aDir = NewDir("tokens");
 	Token aToken;
 	CHECK(!LoadToken(aDir, Provider::GOOGLE_DRIVE, aToken));
-	CHECK(SaveToken(aDir, Provider::GOOGLE_DRIVE, Token{ "1//refresh", "google-perm", "player@example.com" }));
+	CHECK(SaveToken(aDir, Provider::GOOGLE_DRIVE, Token{ "1//refresh", "google-perm", "player@example.com", "google-client" }));
 	CHECK(LoadToken(aDir, Provider::GOOGLE_DRIVE, aToken));
 	CHECK_EQ(aToken.mRefresh, "1//refresh");
 	CHECK_EQ(aToken.mAccount, "google-perm");
 	CHECK_EQ(aToken.mAccountName, "player@example.com");
+	CHECK_EQ(aToken.mClient, "google-client");
 	CHECK(!LoadToken(aDir, Provider::ONEDRIVE, aToken));	// one file per service
 #ifndef _WIN32
 	CHECK((fs::status(TokenPath(aDir, Provider::GOOGLE_DRIVE)).permissions() & (fs::perms::group_all | fs::perms::others_all)) == fs::perms::none);
 #endif
+
+	// a sign-in counts only with the client ID it was made with
+	Config aConfig;
+	aConfig.mProvider = Provider::GOOGLE_DRIVE;
+	aConfig.mGoogleClientId = "google-client";
+	CHECK(LoadTokenFor(aDir, aConfig, aToken));
+	aConfig.mGoogleClientId = "another-client";
+	CHECK(!LoadTokenFor(aDir, aConfig, aToken));
+	CHECK(aToken.mRefresh.empty());
+	aConfig.mProvider = Provider::ONEDRIVE;
+	CHECK(!LoadTokenFor(aDir, aConfig, aToken));
+	aConfig.mProvider = Provider::GOOGLE_DRIVE;
+
+	// one from before the client was kept counts with any
+	std::ofstream(TokenPath(aDir, Provider::GOOGLE_DRIVE), std::ios::trunc) << "PVZP-CLOUDSAVE-TOKEN 1\naccount google-perm\nname \nrefresh 1//old\n";
+	CHECK(LoadTokenFor(aDir, aConfig, aToken));
+	CHECK_EQ(aToken.mRefresh, "1//old");
+	CHECK_EQ(aToken.mClient, "");
+
+	// a refresh saves its new token only over the one it was made with: not over a sign-in or sign-out made since
+	CHECK(ReplaceToken(aDir, Provider::GOOGLE_DRIVE, "1//old", Token{ "1//newer", "google-perm", "", "another-client" }));
+	CHECK(LoadToken(aDir, Provider::GOOGLE_DRIVE, aToken));
+	CHECK_EQ(aToken.mRefresh, "1//newer");
+	CHECK_EQ(aToken.mClient, "another-client");
+	CHECK(!ReplaceToken(aDir, Provider::GOOGLE_DRIVE, "1//old", Token{ "1//stale", "google-perm", "" }));
+	CHECK(LoadToken(aDir, Provider::GOOGLE_DRIVE, aToken));
+	CHECK_EQ(aToken.mRefresh, "1//newer");
 	DeleteToken(aDir, Provider::GOOGLE_DRIVE);
+	CHECK(!LoadToken(aDir, Provider::GOOGLE_DRIVE, aToken));
+	CHECK(!ReplaceToken(aDir, Provider::GOOGLE_DRIVE, "1//newer", Token{ "1//after", "google-perm", "" }));
 	CHECK(!LoadToken(aDir, Provider::GOOGLE_DRIVE, aToken));
 
 	std::ofstream(TokenPath(aDir, Provider::ONEDRIVE)) << "something else\nrefresh x\n";
@@ -1173,60 +1425,294 @@ void TestKeepLocalDamagedCloud()
 	CHECK_EQ(c.Read("user1.dat"), "b's level");
 }
 
+std::string Hex(std::string_view theBytes)
+{
+	std::string aText;
+	for (char aByte : theBytes)
+		aText += std::format("{:02x}", static_cast<unsigned char>(aByte));
+	return aText;
+}
+
+void TestPkce()
+{
+	// FIPS 180-2 examples, and lengths on both sides of the 56 and 64 bytes where the padding takes another block
+	CHECK_EQ(Hex(Sha256("")), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+	CHECK_EQ(Hex(Sha256("abc")), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+	CHECK_EQ(Hex(Sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")), "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+	CHECK_EQ(Hex(Sha256("abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu")),
+		"cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1");
+	CHECK_EQ(Hex(Sha256(std::string(1000000, 'a'))), "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
+	const std::pair<size_t, const char*> LENGTHS[] = {
+		{ 55, "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318" },
+		{ 56, "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a" },
+		{ 63, "7d3e74a05d7db15bce4ad9ec0658ea98e3f06eeecf16b4c6fff2da457ddc2f34" },
+		{ 64, "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb" },
+		{ 65, "635361c48bb9eab14198e76ea8ab7f1a41685d6ad62aa9146d301d4f17eb0ae0" },
+		{ 119, "31eba51c313a5c08226adf18d4a359cfdfd8d2e816b13f4af952f7ea6584dcfb" },
+		{ 120, "2f3d335432c70b580af0e8e1b3674a7c020d683aa5f73aaaedfdc55af904c21c" },
+		{ 128, "6836cf13bac400e9105071cd6af47084dfacad4e5e302c94bfed24e013afb73e" },
+	};
+	for (const auto& [aLength, aDigest] : LENGTHS)
+		CHECK_EQ(Hex(Sha256(std::string(aLength, 'a'))), aDigest);
+	CHECK_EQ(Sha256("abc").size(), size_t(32));
+
+	// RFC 4648 section 10 in the URL alphabet, without padding
+	CHECK_EQ(Base64Url(""), "");
+	CHECK_EQ(Base64Url("f"), "Zg");
+	CHECK_EQ(Base64Url("fo"), "Zm8");
+	CHECK_EQ(Base64Url("foo"), "Zm9v");
+	CHECK_EQ(Base64Url("foob"), "Zm9vYg");
+	CHECK_EQ(Base64Url("fooba"), "Zm9vYmE");
+	CHECK_EQ(Base64Url("foobar"), "Zm9vYmFy");
+	CHECK_EQ(Base64Url("\xfb\xff"), "-_8");
+	CHECK_EQ(Base64Url("\xfb\xef\xbe"), "----");
+	CHECK_EQ(Base64Url("\xff\xff\xff"), "____");
+	CHECK_EQ(Base64Url(std::string("\0\0\0", 3)), "AAAA");
+
+	// RFC 7636 appendix B
+	CHECK_EQ(Base64Url(Sha256("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+}
+
 void TestGoogleSignIn()
 {
 	GoogleServer aServer;
 	Link aLink(aServer);
 	Config aConfig = GoogleConfig();
-	DeviceCode aShown;
-	std::vector<int> aWaits;
+	auto aKeepWaiting = [] { return true; };
+	auto anAllow = [&](const std::string& thePage) { return Target(aServer.Authorize(thePage)); };
 	Token aToken;
-	std::string anError;
+	std::string aPage, anError, aShown;
 
-	aServer.mPolls = { "pending", "slow_down", "ok" };
-	Result aResult = DeviceSignIn(aLink, aConfig, [&](const DeviceCode& theCode) { aShown = theCode; },
-		[&](int theSeconds) { aWaits.push_back(theSeconds); return true; }, aToken, anError);
-	CHECK_EQ(aResult, Result::OK);
-	CHECK_EQ(aShown.mUserCode, "GQVQ-JKEC");
-	CHECK_EQ(aShown.mUrl, "https://www.google.com/device");
-	CHECK(aWaits == std::vector<int>({ 5, 5, 10 }));	// slow_down adds five seconds
-	CHECK(aToken.mRefresh.starts_with("g-refresh-"));
-	CHECK_EQ(aToken.mAccount, "google-perm-123");
-	CHECK_EQ(aToken.mAccountName, "player@example.com");
+	// the player allows the game; a stale tab of an earlier sign-in and the favicon reach the listener first
+	{
+		Browser aBrowser;
+		BrowserSignIn aSignIn(aConfig, std::make_unique<FakeListener>(aBrowser));
+		CHECK_EQ(aSignIn.Start(aPage, anError), Result::OK);
+		CHECK_EQ(aBrowser.mOpens, 1);
+		CHECK(aPage.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
+		Url aUrl = ParseUrl(aPage);
+		CHECK_EQ(aUrl.mQuery["client_id"], "google-client");
+		CHECK_EQ(aUrl.mQuery["redirect_uri"], "http://127.0.0.1:49152");
+		CHECK_EQ(aUrl.mQuery["response_type"], "code");
+		CHECK_EQ(aUrl.mQuery["scope"], "https://www.googleapis.com/auth/drive.appdata");
+		CHECK_EQ(aUrl.mQuery["code_challenge_method"], "S256");
+		CHECK_EQ(aUrl.mQuery["code_challenge"].size(), size_t(43));
+		CHECK_EQ(aUrl.mQuery["state"].size(), size_t(22));
+		CHECK_EQ(aUrl.mQuery["access_type"], "offline");
+		CHECK_EQ(aUrl.mQuery["prompt"], "consent select_account");
+		CHECK(aPage.find("google-secret") == std::string::npos);	// the secret goes to the token request only
 
-	aServer.mPolls = { "pending", "denied" };
-	CHECK_EQ(DeviceSignIn(aLink, aConfig, [](const DeviceCode&) {}, [](int) { return true; }, aToken, anError), Result::FAILED);
-	CHECK(anError.find("declined") != std::string::npos);
+		std::string aRedirect = aServer.Authorize(aPage);
+		CHECK(aRedirect.starts_with("http://127.0.0.1:49152?state="));
+		aBrowser.mRequests = { "/?state=stale&code=old", "/favicon.ico", Target(aRedirect) };
+		int anAnswers = 0;
+		Token aKept;
+		CHECK_EQ(aSignIn.Finish(aLink, aKeepWaiting, [&] { anAnswers++; CHECK_EQ(Shown(aBrowser), ""); },
+			[&](const Token& theToken) { aKept = theToken; CHECK_EQ(Shown(aBrowser), ""); return true; }, aToken, anError), Result::OK);
+		CHECK_EQ(anError, "");
+		CHECK_EQ(anAnswers, 1);
+		CHECK_EQ(Shown(aBrowser), "done");		// once the sign-in was fetched and kept, not before
+		CHECK(aToken.mRefresh.starts_with("g-refresh-"));
+		CHECK(aServer.mRefreshTokens.contains(aToken.mRefresh));
+		CHECK_EQ(aToken.mAccount, "google-perm-123");
+		CHECK_EQ(aToken.mAccountName, "player@example.com");
+		CHECK_EQ(aToken.mClient, "google-client");
+		CHECK_EQ(aKept.mRefresh, aToken.mRefresh);
+		CHECK_EQ(aKept.mClient, "google-client");
+		CHECK(aServer.mCodes.empty());		// redeemed with the verifier and the address it was issued for
 
-	aServer.mPolls = { "expired" };
-	CHECK_EQ(DeviceSignIn(aLink, aConfig, [](const DeviceCode&) {}, [](int) { return true; }, aToken, anError), Result::FAILED);
-	CHECK(anError.find("expired") != std::string::npos);
+		CHECK_EQ(aSignIn.Finish(aLink, aKeepWaiting, nullptr, nullptr, aToken, anError), Result::FAILED);	// a sign-in finishes once
+		CHECK(anError.find("not started") != std::string::npos);
+	}
 
-	// the player waits too long: polling stops when the code runs out
-	aServer.mPolls.clear();
-	int aPolls = 0;
-	CHECK_EQ(DeviceSignIn(aLink, aConfig, [](const DeviceCode&) {}, [&](int) { aPolls++; return true; }, aToken, anError), Result::FAILED);
-	CHECK_EQ(aPolls, 1800 / 5);
+	// every sign-in has a state and a verifier of its own: the answer meant for one does not finish another
+	{
+		Browser aFirstBrowser, aSecondBrowser;
+		BrowserSignIn aFirst(aConfig, std::make_unique<FakeListener>(aFirstBrowser));
+		BrowserSignIn aSecond(aConfig, std::make_unique<FakeListener>(aSecondBrowser));
+		std::string aFirstPage, aSecondPage;
+		CHECK_EQ(aFirst.Start(aFirstPage, anError), Result::OK);
+		CHECK_EQ(aSecond.Start(aSecondPage, anError), Result::OK);
+		Url aFirstUrl = ParseUrl(aFirstPage), aSecondUrl = ParseUrl(aSecondPage);
+		CHECK(aFirstUrl.mQuery["state"] != aSecondUrl.mQuery["state"]);
+		CHECK(aFirstUrl.mQuery["code_challenge"] != aSecondUrl.mQuery["code_challenge"]);
+		aSecondBrowser.mRequests = { Target(aServer.Authorize(aFirstPage)) };
+		CHECK_EQ(aSecond.Finish(aLink, aKeepWaiting, nullptr, nullptr, aToken, anError, std::chrono::seconds(1)), Result::FAILED);
+		CHECK_EQ(anError, NO_BROWSER);
+		CHECK(aToken.mRefresh.empty());
+		CHECK_EQ(Shown(aSecondBrowser), "");
+		aServer.mCodes.clear();
+	}
 
-	CHECK_EQ(DeviceSignIn(aLink, aConfig, [](const DeviceCode&) {}, [](int) { return false; }, aToken, anError), Result::FAILED);
-	CHECK(anError.find("cancelled") != std::string::npos);
+	// the player says no
+	size_t aRequests = aServer.mLog.size();
+	CHECK_EQ(SignInWith(aLink, aConfig, [](const std::string& thePage) { return Refusal(thePage, "access_denied"); }, aToken, anError, &aShown), Result::FAILED);
+	CHECK_EQ(anError, "the game was not given access to your Google Drive");
+	CHECK_EQ(aShown, "denied");
+	CHECK_EQ(aServer.mLog.size(), aRequests);	// nothing to redeem
 
+	// or signs in without ticking the box for Drive; a scope among others is fine
+	aServer.mGranted = "openid https://www.googleapis.com/auth/userinfo.email";
+	CHECK_EQ(SignInWith(aLink, aConfig, anAllow, aToken, anError, &aShown), Result::FAILED);
+	CHECK_EQ(anError, "the game was not given access to your Google Drive: tick the box for it on the Google page when you sign in again");
+	CHECK_EQ(aShown, "denied");
+	CHECK(aToken.mRefresh.empty());
+	aServer.mGranted = "openid https://www.googleapis.com/auth/drive.appdata";
+	CHECK_EQ(SignInWith(aLink, aConfig, anAllow, aToken, anError, &aShown), Result::OK);
+	CHECK_EQ(aShown, "done");
+	aServer.mGranted = "https://www.googleapis.com/auth/drive.appdata";
+
+	// an error that Google sends back to the game instead of showing it
+	CHECK_EQ(SignInWith(aLink, aConfig, [](const std::string& thePage) { return Refusal(thePage, "server_error"); }, aToken, anError, &aShown), Result::FAILED);
+	CHECK_EQ(anError, "Google Drive turned down the sign-in: server_error");
+	CHECK_EQ(aShown, "failed");
+
+	// back with the state of the sign-in, but with an empty code: nothing to redeem
+	aRequests = aServer.mLog.size();
+	CHECK_EQ(SignInWith(aLink, aConfig, [](const std::string& thePage)
+		{ return std::format("/?state={}&code=", UrlEscape(ParseUrl(thePage).mQuery["state"])); }, aToken, anError, &aShown), Result::FAILED);
+	CHECK_EQ(anError, "Google Drive sent the browser back without a sign-in code");
+	CHECK_EQ(aShown, "failed");
+	CHECK_EQ(aServer.mLog.size(), aRequests);
+
+	// the code was issued for another verifier, or for another address; the code of the error goes first
+	CHECK_EQ(SignInWith(aLink, aConfig, [&](const std::string& thePage)
+		{
+			std::string aRequest = Target(aServer.Authorize(thePage));
+			aServer.mCodes.begin()->second.mChallenge = Base64Url(Sha256("someone else's verifier"));
+			return aRequest;
+		}, aToken, anError, &aShown), Result::FAILED);
+	CHECK_EQ(anError, "signing in to Google Drive failed: invalid_grant: Invalid code verifier.");
+	CHECK_EQ(aShown, "failed");
+	CHECK_EQ(SignInWith(aLink, aConfig, [&](const std::string& thePage)
+		{
+			std::string aRequest = Target(aServer.Authorize(thePage));
+			aServer.mCodes.begin()->second.mRedirect = "http://127.0.0.1:1";
+			return aRequest;
+		}, aToken, anError), Result::FAILED);
+	CHECK_EQ(anError, "signing in to Google Drive failed: redirect_uri_mismatch: Bad Request");
+
+	// no answer: the player closed the tab and waited, or cancelled in the game
+	CHECK_EQ(SignInWith(aLink, aConfig, [](const std::string&) { return ""; }, aToken, anError, &aShown, std::chrono::seconds(0)), Result::FAILED);
+	CHECK_EQ(anError, NO_BROWSER);
+	CHECK_EQ(aShown, "");
+	{
+		Browser aBrowser;
+		BrowserSignIn aSignIn(aConfig, std::make_unique<FakeListener>(aBrowser));
+		CHECK_EQ(aSignIn.Start(aPage, anError), Result::OK);
+		aBrowser.mRequests = { Target(aServer.Authorize(aPage)) };
+		bool anAnswered = false;
+		CHECK_EQ(aSignIn.Finish(aLink, [] { return false; }, [&] { anAnswered = true; }, nullptr, aToken, anError), Result::FAILED);
+		CHECK_EQ(anError, "the sign-in was cancelled");
+		CHECK(!anAnswered);
+		CHECK_EQ(Shown(aBrowser), "");
+		aServer.mCodes.clear();
+	}
+
+	// Google shows the error on its own page, and the browser never comes back, for a client of another type (the
+	// "TVs and Limited Input devices" one of the device flow, say) and for a client ID it does not know
+	aServer.mClientType = "TVs and Limited Input devices";
+	CHECK_EQ(SignInWith(aLink, aConfig, anAllow, aToken, anError, &aShown, std::chrono::seconds(0)), Result::FAILED);
+	CHECK_EQ(anError, NO_BROWSER);
+	CHECK_EQ(aShown, "");
+	aServer.mClientType = "Desktop app";
+	Config aStranger = aConfig;
+	aStranger.mGoogleClientId = "someone-else";
+	CHECK_EQ(SignInWith(aLink, aStranger, anAllow, aToken, anError, &aShown, std::chrono::seconds(0)), Result::FAILED);
+	CHECK_EQ(anError, NO_BROWSER);
+
+	// stopped while the sign-in was fetched: nothing is kept, and the browser is told it failed
+	{
+		bool aStopped = false;
+		aServer.Before([](const HttpRequest& theRequest) { return theRequest.mUrl == "https://oauth2.googleapis.com/token"; }, [&] { aStopped = true; });
+		Browser aBrowser;
+		BrowserSignIn aSignIn(aConfig, std::make_unique<FakeListener>(aBrowser));
+		CHECK_EQ(aSignIn.Start(aPage, anError), Result::OK);
+		aBrowser.mRequests = { Target(aServer.Authorize(aPage)) };
+		int aKept = 0;
+		CHECK_EQ(aSignIn.Finish(aLink, [&] { return !aStopped; }, nullptr, [&](const Token&) { aKept++; return true; }, aToken, anError), Result::FAILED);
+		CHECK(aStopped);
+		CHECK_EQ(anError, "the sign-in was cancelled");
+		CHECK_EQ(aKept, 0);
+		CHECK(aToken.mRefresh.empty());
+		CHECK_EQ(Shown(aBrowser), "failed");
+	}
+
+	// the sign-in could not be kept: the browser must not say it is done
+	{
+		Browser aBrowser;
+		BrowserSignIn aSignIn(aConfig, std::make_unique<FakeListener>(aBrowser));
+		CHECK_EQ(aSignIn.Start(aPage, anError), Result::OK);
+		aBrowser.mRequests = { Target(aServer.Authorize(aPage)) };
+		CHECK_EQ(aSignIn.Finish(aLink, aKeepWaiting, nullptr, [](const Token&) { return false; }, aToken, anError), Result::FAILED);
+		CHECK_EQ(anError, "the sign-in could not be saved");
+		CHECK(aToken.mRefresh.empty());
+		CHECK_EQ(Shown(aBrowser), "failed");
+	}
+
+	// the listener cannot be opened, or fails while it waits
+	{
+		Browser aBrowser;
+		aBrowser.mOpenError = "could not listen on 127.0.0.1 for the browser: Operation not permitted";
+		BrowserSignIn aSignIn(aConfig, std::make_unique<FakeListener>(aBrowser));
+		aPage = "left over";
+		CHECK_EQ(aSignIn.Start(aPage, anError), Result::FAILED);
+		CHECK_EQ(anError, aBrowser.mOpenError);
+		CHECK_EQ(aPage, "");
+		CHECK_EQ(aSignIn.Finish(aLink, aKeepWaiting, nullptr, nullptr, aToken, anError), Result::FAILED);
+		CHECK(anError.find("not started") != std::string::npos);
+	}
+	{
+		Browser aBrowser;
+		aBrowser.mWaitError = "waiting for the browser failed: Bad file descriptor";
+		BrowserSignIn aSignIn(aConfig, std::make_unique<FakeListener>(aBrowser));
+		CHECK_EQ(aSignIn.Start(aPage, anError), Result::OK);
+		CHECK_EQ(aSignIn.Finish(aLink, aKeepWaiting, nullptr, nullptr, aToken, anError), Result::FAILED);
+		CHECK_EQ(anError, aBrowser.mWaitError);
+		CHECK_EQ(Shown(aBrowser), "");
+	}
+
+	// the token request
 	Config aWrongSecret = aConfig;
 	aWrongSecret.mGoogleClientSecret = "nope";
-	aServer.mPolls = { "ok" };
-	CHECK_EQ(DeviceSignIn(aLink, aWrongSecret, [](const DeviceCode&) {}, [](int) { return true; }, aToken, anError), Result::FAILED);
-	CHECK(anError.find("Unauthorized") != std::string::npos);
+	CHECK_EQ(SignInWith(aLink, aWrongSecret, anAllow, aToken, anError, &aShown), Result::FAILED);
+	CHECK_EQ(anError, "Google did not accept the client secret: enter the secret of this client ID (see the README)");
+	CHECK_EQ(aShown, "failed");
+	aServer.mCodes.clear();
 
+	aServer.mNoRefresh = true;
+	CHECK_EQ(SignInWith(aLink, aConfig, anAllow, aToken, anError, &aShown), Result::FAILED);
+	CHECK_EQ(anError, "Google Drive did not let the game stay signed in");
+	CHECK_EQ(aShown, "failed");
+	aServer.mNoRefresh = false;
+
+	CHECK_EQ(SignInWith(aLink, aConfig, [&](const std::string& thePage)
+		{
+			std::string aRequest = Target(aServer.Authorize(thePage));
+			aServer.mOffline = true;
+			return aRequest;
+		}, aToken, anError, &aShown), Result::OFFLINE);
+	CHECK_EQ(aShown, "failed");
+	aServer.mOffline = false;
+	aServer.mCodes.clear();
+
+	// what has to be set up first
+	Config aNoSecret = aConfig;
+	aNoSecret.mGoogleClientSecret.clear();
+	Browser aBrowser;
+	CHECK_EQ(BrowserSignIn(aNoSecret, std::make_unique<FakeListener>(aBrowser)).Start(aPage, anError), Result::FAILED);
+	CHECK_EQ(anError, "enter the client secret of your Google app first (see the README)");
 	Config aNoClient = aConfig;
 	aNoClient.mGoogleClientId.clear();
 	if (!HasBuiltInClientId(Provider::GOOGLE_DRIVE))
 	{
-		CHECK_EQ(DeviceSignIn(aLink, aNoClient, [](const DeviceCode&) {}, [](int) { return true; }, aToken, anError), Result::FAILED);
+		CHECK_EQ(BrowserSignIn(aNoClient, std::make_unique<FakeListener>(aBrowser)).Start(aPage, anError), Result::FAILED);
 		CHECK(anError.find("client ID") != std::string::npos);
 	}
-
-	aServer.mOffline = true;
-	CHECK_EQ(DeviceSignIn(aLink, aConfig, [](const DeviceCode&) {}, [](int) { return true; }, aToken, anError), Result::OFFLINE);
+	Config aWebDav = aConfig;
+	aWebDav.mProvider = Provider::WEBDAV;
+	CHECK_EQ(BrowserSignIn(aWebDav, std::make_unique<FakeListener>(aBrowser)).Start(aPage, anError), Result::FAILED);
+	CHECK_EQ(aBrowser.mOpens, 0);	// nothing listens before the sign-in can go ahead
 }
 
 void TestGoogleSync()
@@ -1342,6 +1828,9 @@ void TestGoogleTokens()
 	std::string aBody, aVersion;
 	CHECK_EQ(aStore->Get(MANIFEST_PATH, aFound, aBody, aVersion), Result::OK);
 	CHECK_EQ(aServer.mRefreshes, 1);
+	Token aSaved;
+	CHECK(LoadToken(aState, Provider::GOOGLE_DRIVE, aSaved));
+	CHECK_EQ(aSaved.mClient, "google-client");		// learned from the first refresh, as in a file from before it was kept
 	CHECK_EQ(aStore->Get(MANIFEST_PATH, aFound, aBody, aVersion), Result::OK);
 	CHECK_EQ(aServer.mRefreshes, 1);	// the access token is kept
 
@@ -1358,33 +1847,406 @@ void TestGoogleTokens()
 	std::unique_ptr<Store> aSignedOut = MakeGoogleDriveStore(GoogleConfig(), aNone, LinkTo(aServer));
 	CHECK_EQ(aSignedOut->Get(MANIFEST_PATH, aFound, aBody, aVersion), Result::FAILED);
 	CHECK(aSignedOut->GetError().find("not signed in") != std::string::npos);
+
+	// made with another client, such as the "TVs and Limited Input devices" one of earlier versions, in a file that
+	// does not say so: Google turns its refresh token down for this client
+	fs::path aForeign = NewDir("gtokens-foreign");
+	aServer.mForeignRefresh.insert("tv-refresh");
+	SaveToken(aForeign, Provider::GOOGLE_DRIVE, Token{ "tv-refresh", "google-perm-123", "" });
+	std::unique_ptr<Store> aForeignStore = MakeGoogleDriveStore(GoogleConfig(), aForeign, LinkTo(aServer));
+	CHECK_EQ(aForeignStore->Get(MANIFEST_PATH, aFound, aBody, aVersion), Result::FAILED);
+	CHECK_EQ(aForeignStore->GetError(), "the Google Drive sign-in was made with another client ID: press Sign Out, then Sign In again");
+
+	// a secret that does not go with the client ID
+	Config aWrongSecret = GoogleConfig();
+	aWrongSecret.mGoogleClientSecret = "nope";
+	fs::path aSecretState = NewDir("gtokens-secret");
+	SaveToken(aSecretState, Provider::GOOGLE_DRIVE, Token{ aServer.IssueRefresh(), "google-perm-123", "" });
+	std::unique_ptr<Store> aWrongStore = MakeGoogleDriveStore(aWrongSecret, aSecretState, LinkTo(aServer));
+	CHECK_EQ(aWrongStore->Get(MANIFEST_PATH, aFound, aBody, aVersion), Result::FAILED);
+	CHECK_EQ(aWrongStore->GetError(), "Google did not accept the client ID and secret: check that the secret belongs to this client ID (see the README)");
+
+	// kept with another client ID than the one set now: not signed in, and nothing is sent
+	fs::path anOtherClient = NewDir("gtokens-other-client");
+	SaveToken(anOtherClient, Provider::GOOGLE_DRIVE, Token{ aServer.IssueRefresh(), "google-perm-123", "", "old-client" });
+	size_t aRequests = aServer.mLog.size();
+	std::unique_ptr<Store> anOtherStore = MakeGoogleDriveStore(GoogleConfig(), anOtherClient, LinkTo(aServer));
+	CHECK_EQ(anOtherStore->Get(MANIFEST_PATH, aFound, aBody, aVersion), Result::FAILED);
+	CHECK(anOtherStore->GetError().find("not signed in") != std::string::npos);
+	CHECK_EQ(aServer.mLog.size(), aRequests);
 }
 
 void TestOneDriveSignIn()
 {
 	OneDriveServer aServer;
 	Link aLink(aServer);
-	DeviceCode aShown;
-	std::vector<int> aWaits;
+	auto anAllow = [&](const std::string& thePage) { return Target(aServer.Authorize(thePage)); };
 	Token aToken;
-	std::string anError;
-	aServer.mPolls = { "pending", "pending", "ok" };
-	CHECK_EQ(DeviceSignIn(aLink, OneDriveConfig(), [&](const DeviceCode& theCode) { aShown = theCode; },
-		[&](int theSeconds) { aWaits.push_back(theSeconds); return true; }, aToken, anError), Result::OK);
-	CHECK_EQ(aShown.mUrl, "https://microsoft.com/devicelogin");
-	CHECK_EQ(aShown.mUserCode, "ABCD2345");
-	CHECK(aWaits == std::vector<int>({ 5, 5, 5 }));
+	std::string aPage, anError, aShown;
+
+	Browser aBrowser;
+	BrowserSignIn aSignIn(OneDriveConfig(), std::make_unique<FakeListener>(aBrowser));
+	CHECK_EQ(aSignIn.Start(aPage, anError), Result::OK);
+	CHECK(aPage.starts_with("https://login.microsoftonline.com/common/oauth2/v2.0/authorize?"));
+	Url aUrl = ParseUrl(aPage);
+	CHECK_EQ(aUrl.mQuery["client_id"], "onedrive-client");
+	CHECK_EQ(aUrl.mQuery["redirect_uri"], "http://localhost:49152");
+	CHECK_EQ(aUrl.mQuery["response_type"], "code");
+	CHECK_EQ(aUrl.mQuery["response_mode"], "query");
+	CHECK_EQ(aUrl.mQuery["scope"], "Files.ReadWrite.AppFolder offline_access");
+	CHECK_EQ(aUrl.mQuery["code_challenge_method"], "S256");
+	CHECK_EQ(aUrl.mQuery["prompt"], "select_account");
+	CHECK(!aUrl.mQuery.contains("client_secret"));
+	std::string aRedirect = aServer.Authorize(aPage);
+	CHECK(aRedirect.starts_with("http://localhost:49152/?code="));
+	aBrowser.mRequests = { Target(aRedirect) };
+	CHECK_EQ(aSignIn.Finish(aLink, [] { return true; }, nullptr, nullptr, aToken, anError), Result::OK);	// with no client secret
 	CHECK(aToken.mRefresh.starts_with("m-refresh-"));
 	CHECK_EQ(aToken.mAccount, "drive-42/approot-id");
+	CHECK_EQ(aToken.mClient, "onedrive-client");
+	CHECK(aServer.mCodes.empty());
+	CHECK_EQ(aServer.mRedeemedScope, "Files.ReadWrite.AppFolder offline_access");	// sent again, as Microsoft's example does
+	CHECK_EQ(aServer.Count("GET https://graph.microsoft.com/v1.0/me/drive/special/approot?$select=id,parentReference"), 1);	// "$" as OData has it
+	CHECK_EQ(Shown(aBrowser), "done");
 
-	aServer.mPolls = { "denied" };
-	CHECK_EQ(DeviceSignIn(aLink, OneDriveConfig(), [](const DeviceCode&) {}, [](int) { return true; }, aToken, anError), Result::FAILED);
-	CHECK(anError.find("declined") != std::string::npos);
+	CHECK_EQ(SignInWith(aLink, OneDriveConfig(), [](const std::string& thePage) { return Refusal(thePage, "access_denied", "AADSTS65004: User declined to consent to access the app."); },
+		aToken, anError, &aShown), Result::FAILED);
+	CHECK_EQ(anError, "the game was not given access to your OneDrive");
+	CHECK_EQ(aShown, "denied");
 
-	Config aWrong = OneDriveConfig();
-	aWrong.mOneDriveClientId = "someone-else";
-	CHECK_EQ(DeviceSignIn(aLink, aWrong, [](const DeviceCode&) {}, [](int) { return true; }, aToken, anError), Result::FAILED);
-	CHECK(anError.find("Bad request") != std::string::npos);
+	// an error that Microsoft sends back to the game, its description running over several lines of trace ids
+	CHECK_EQ(SignInWith(aLink, OneDriveConfig(), [](const std::string& thePage)
+		{ return Refusal(thePage, "temporarily_unavailable", "AADSTS90033: A transient error has occurred. Please try again.\r\nTrace ID: 1\r\nCorrelation ID: 2"); },
+		aToken, anError, &aShown), Result::FAILED);
+	CHECK_EQ(anError, "OneDrive turned down the sign-in: AADSTS90033: A transient error has occurred. Please try again.");
+	CHECK_EQ(aShown, "failed");
+
+	// a redirect URI that is not registered (AADSTS50011) and a client ID Microsoft does not know (AADSTS700016)
+	// are shown on its own page, and the browser never comes back
+	aServer.mLocalhost = false;
+	CHECK_EQ(SignInWith(aLink, OneDriveConfig(), anAllow, aToken, anError, &aShown, std::chrono::seconds(0)), Result::FAILED);
+	CHECK_EQ(anError, NO_BROWSER);
+	CHECK_EQ(aShown, "");
+	aServer.mLocalhost = true;
+	Config aStranger = OneDriveConfig();
+	aStranger.mOneDriveClientId = "someone-else";
+	CHECK_EQ(SignInWith(aLink, aStranger, anAllow, aToken, anError, &aShown, std::chrono::seconds(0)), Result::FAILED);
+	CHECK_EQ(anError, NO_BROWSER);
+
+	// http://localhost registered under "Web" rather than "Mobile and desktop applications"
+	aServer.mPlatform = "Web";
+	CHECK_EQ(SignInWith(aLink, OneDriveConfig(), anAllow, aToken, anError, &aShown), Result::FAILED);
+	CHECK_EQ(anError, "signing in to OneDrive failed: invalid_client: AADSTS7000218: The request body must contain the following parameter: 'client_assertion' or 'client_secret'.");
+	CHECK_EQ(aShown, "failed");
+	aServer.mPlatform = "Mobile and desktop applications";
+	aServer.mCodes.clear();
+
+	CHECK_EQ(SignInWith(aLink, OneDriveConfig(), [&](const std::string& thePage)
+		{
+			std::string aRequest = Target(aServer.Authorize(thePage));
+			aServer.mCodes.begin()->second.mChallenge = Base64Url(Sha256("someone else's verifier"));
+			return aRequest;
+		}, aToken, anError, &aShown), Result::FAILED);
+	CHECK(anError.find("AADSTS501481") != std::string::npos);
+	CHECK_EQ(aShown, "failed");
+	CHECK_EQ(SignInWith(aLink, OneDriveConfig(), [&](const std::string& thePage)
+		{
+			std::string aRequest = Target(aServer.Authorize(thePage));
+			aServer.mCodes.clear();		// already redeemed, or expired
+			return aRequest;
+		}, aToken, anError), Result::FAILED);
+	CHECK_EQ(anError, "signing in to OneDrive failed: invalid_grant: AADSTS70000: The provided value for the 'code' parameter is not valid.");
+
+	Config aNoClient = OneDriveConfig();
+	aNoClient.mOneDriveClientId.clear();
+	if (!HasBuiltInClientId(Provider::ONEDRIVE))
+	{
+		CHECK_EQ(SignInWith(aLink, aNoClient, [](const std::string&) { return ""; }, aToken, anError), Result::FAILED);
+		CHECK_EQ(anError, "enter the client ID of your OneDrive app first (see the README)");
+	}
+}
+
+// --- the loopback listener ---
+
+#ifdef _WIN32
+using Socket = SOCKET;
+const Socket NO_SOCKET = INVALID_SOCKET;
+using AddressLength = int;
+void CloseSocket(Socket theSocket) { closesocket(theSocket); }
+#else
+using Socket = int;
+const Socket NO_SOCKET = -1;
+using AddressLength = socklen_t;
+void CloseSocket(Socket theSocket) { close(theSocket); }
+#endif
+
+// A blocking connection to the loopback address of theFamily, which gives up reading after five seconds.
+Socket Connect(int theFamily, int thePort)
+{
+	Socket aSocket = socket(theFamily, SOCK_STREAM, IPPROTO_TCP);
+	if (aSocket == NO_SOCKET)
+		return NO_SOCKET;
+#ifdef _WIN32
+	DWORD aTimeout = 5000;
+#else
+	timeval aTimeout{ 5, 0 };
+#endif
+	setsockopt(aSocket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&aTimeout), sizeof(aTimeout));
+
+	sockaddr_storage anAddress{};
+	AddressLength aLength;
+	if (theFamily == AF_INET)
+	{
+		sockaddr_in* anIPv4 = reinterpret_cast<sockaddr_in*>(&anAddress);
+		anIPv4->sin_family = AF_INET;
+		anIPv4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		anIPv4->sin_port = htons(static_cast<uint16_t>(thePort));
+		aLength = sizeof(sockaddr_in);
+	}
+	else
+	{
+		sockaddr_in6* anIPv6 = reinterpret_cast<sockaddr_in6*>(&anAddress);
+		anIPv6->sin6_family = AF_INET6;
+		anIPv6->sin6_addr.s6_addr[15] = 1;
+		anIPv6->sin6_port = htons(static_cast<uint16_t>(thePort));
+		aLength = sizeof(sockaddr_in6);
+	}
+	if (connect(aSocket, reinterpret_cast<sockaddr*>(&anAddress), aLength) != 0)
+	{
+		CloseSocket(aSocket);
+		return NO_SOCKET;
+	}
+	return aSocket;
+}
+
+// Sends thePieces, with a pause between them, and reads the answer until the listener closes the connection.
+std::string Exchange(int theFamily, int thePort, const std::vector<std::string>& thePieces)
+{
+	Socket aSocket = Connect(theFamily, thePort);
+	if (aSocket == NO_SOCKET)
+		return "no connection";
+	for (size_t i = 0; i < thePieces.size(); i++)
+	{
+		if (i > 0)
+			std::this_thread::sleep_for(std::chrono::milliseconds(150));
+		send(aSocket, thePieces[i].data(), static_cast<int>(thePieces[i].size()), 0);
+	}
+	std::string anAnswer;
+	char aBuffer[4096];
+	for (;;)
+	{
+		int aCount = static_cast<int>(recv(aSocket, aBuffer, sizeof(aBuffer), 0));
+		if (aCount <= 0)
+			break;
+		anAnswer.append(aBuffer, static_cast<size_t>(aCount));
+	}
+	CloseSocket(aSocket);
+	return anAnswer;
+}
+
+// Whether this computer has an IPv6 loopback address to listen on at all.
+bool HasIPv6Loopback()
+{
+	Socket aSocket = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+	if (aSocket == NO_SOCKET)
+		return false;
+	sockaddr_in6 anAddress{};
+	anAddress.sin6_family = AF_INET6;
+	anAddress.sin6_addr.s6_addr[15] = 1;
+	bool aBound = bind(aSocket, reinterpret_cast<sockaddr*>(&anAddress), sizeof(anAddress)) == 0;
+	CloseSocket(aSocket);
+	return aBound;
+}
+
+std::string StatusLine(const std::string& theAnswer)
+{
+	return theAnswer.substr(0, theAnswer.find("\r\n"));
+}
+
+// A sandbox that allows no listening skips a test of the listener; any other reason it did not open fails it.
+void NotListening(int theLine, const std::string& theError)
+{
+#ifdef _WIN32
+	bool aForbidden = theError.ends_with("Winsock error 10013");	// WSAEACCES
+#else
+	bool aForbidden = theError.ends_with(std::strerror(EPERM)) || theError.ends_with(std::strerror(EACCES));
+#endif
+	if (aForbidden)
+		gSkipped = theError;
+	else
+		Report(false, theLine, theError);
+}
+
+void TestLoopback()
+{
+	std::unique_ptr<RedirectListener> aListener = MakeLoopbackListener();
+	std::string anError;
+	Query aQuery;
+	CHECK(!aListener->Wait("s", aQuery, [] { return true; }, anError));	// not open yet
+	CHECK_EQ(anError, "the game is not listening for the browser");
+	if (!aListener->Open(anError))
+	{
+		NotListening(__LINE__, anError);
+		return;
+	}
+	int aPort = aListener->Port();
+	CHECK(aPort >= 1024);		// browsers turn the ports below down
+	bool anIPv6 = HasIPv6Loopback();
+	const std::string STATE = "Zt0rV1q8yU2bW5nJ4kHc3A";
+
+	// A browser: a spare connection that sends nothing, requests that are not the answer, and then the answer. That
+	// one carries what cookies other pages on localhost left, tens of KB at times, and ends in pieces.
+	std::vector<std::string> anAnswers;
+	std::atomic<bool> aBrowserDone{ false };
+	std::thread aBrowser([&]
+	{
+		Socket aSpare = Connect(AF_INET, aPort);
+		anAnswers.push_back(Exchange(AF_INET, aPort, { "GET /favicon.ico HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n" }));
+		anAnswers.push_back(Exchange(AF_INET, aPort, { "GET /?state=Zt0rV1q8yU2bW5nJ4kHc3", "B&code=x HTTP/1.1\r\nHost: 127.0.0.1\r\n", "\r\n" }));
+		anAnswers.push_back(Exchange(AF_INET, aPort, { std::format("POST /?state={}&code=x HTTP/1.1\r\nContent-Length: 0\r\n\r\n", STATE) }));
+		anAnswers.push_back(Exchange(AF_INET, aPort, { std::format("GET /?state={} HTTP/1.1\r", STATE), "\n\r\n" }));
+		anAnswers.push_back(Exchange(AF_INET, aPort, { "nonsense\r\n\r\n" }));
+		anAnswers.push_back(Exchange(AF_INET, aPort, { "GET /?" + std::string(64 * 1024, 'a') + " HTTP/1.1\r\n\r\n" }));
+		anAnswers.push_back(Exchange(AF_INET, aPort, { "GET / HTTP/1.1\r\nCookie: " + std::string(1024 * 1024, 'c') + "\r\n\r\n" }));
+		anAnswers.push_back(Exchange(AF_INET, aPort, { std::string("\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03", 11) }));	// a TLS hello
+		anAnswers.push_back(Exchange(anIPv6 ? AF_INET6 : AF_INET, aPort,
+			{ std::format("GET /?code=4%2Fa+b&state={}&scope=x&code=second HTTP/1.1\r\nHost: localhost:{}\r\nCookie: {}", STATE, aPort, std::string(30 * 1024, 'c')),
+				"\r\n\r", "\n" }));
+		aBrowserDone = true;
+		if (aSpare != NO_SOCKET)
+			CloseSocket(aSpare);
+	});
+	auto aDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+	bool anAnswered = aListener->Wait(STATE, aQuery, [&] { return std::chrono::steady_clock::now() < aDeadline; }, anError);
+	CHECK(anAnswered);
+	CHECK_EQ(anError, "");
+	CHECK_EQ(aQuery["code"], "4/a b");		// decoded, and the first one counts
+	CHECK_EQ(aQuery["scope"], "x");
+	CHECK_EQ(aQuery["state"], STATE);
+	std::this_thread::sleep_for(std::chrono::milliseconds(300));
+	CHECK(!aBrowserDone);		// the browser waits to be told how it went
+	aListener->Reply(RedirectListener::Outcome::DONE);
+	aListener->Reply(RedirectListener::Outcome::FAILED);	// told once only
+	aBrowser.join();
+
+	CHECK_EQ(anAnswers.size(), size_t(9));
+	if (anAnswers.size() == 9)
+	{
+		CHECK_EQ(StatusLine(anAnswers[0]), "HTTP/1.1 404 Not Found");
+		CHECK(anAnswers[0].find("<link rel=\"icon\" href=\"data:,\">") != std::string::npos);	// so no browser asks for one
+		CHECK_EQ(StatusLine(anAnswers[1]), "HTTP/1.1 400 Bad Request");		// another state, sent in pieces
+		CHECK(anAnswers[1].find("does not belong to the sign-in") != std::string::npos);
+		CHECK_EQ(StatusLine(anAnswers[2]), "HTTP/1.1 405 Method Not Allowed");
+		CHECK_EQ(StatusLine(anAnswers[3]), "HTTP/1.1 400 Bad Request");		// neither a code nor an error, and its line ends in two pieces
+		CHECK_EQ(StatusLine(anAnswers[4]), "HTTP/1.1 400 Bad Request");
+		CHECK_EQ(StatusLine(anAnswers[5]), "HTTP/1.1 414 URI Too Long");
+		CHECK_EQ(StatusLine(anAnswers[6]), "HTTP/1.1 431 Request Header Fields Too Large");
+		CHECK_EQ(anAnswers[7], "");		// closed without a word
+		CHECK_EQ(StatusLine(anAnswers[8]), "HTTP/1.1 200 OK");
+		CHECK(anAnswers[8].find("Done. You can close this tab") != std::string::npos);
+		CHECK(anAnswers[8].find("Cache-Control: no-store\r\n") != std::string::npos);
+		size_t aBodyAt = anAnswers[8].find("\r\n\r\n");
+		CHECK(aBodyAt != std::string::npos &&
+			anAnswers[8].find(std::format("Content-Length: {}\r\n", anAnswers[8].size() - aBodyAt - 4)) != std::string::npos);
+	}
+
+	// done: nothing listens any more
+	Socket aLate = Connect(AF_INET, aPort);
+	CHECK(aLate == NO_SOCKET);
+	if (aLate != NO_SOCKET)
+		CloseSocket(aLate);
+	CHECK(!aListener->Wait(STATE, aQuery, [] { return true; }, anError));
+	CHECK(!anError.empty());
+
+	// the player said no
+	std::unique_ptr<RedirectListener> aSecond = MakeLoopbackListener();
+	CHECK(aSecond->Open(anError));
+	std::string aRefusal;
+	std::thread aRefusingBrowser([&, aSecondPort = aSecond->Port()]
+	{
+		aRefusal = Exchange(AF_INET, aSecondPort, { std::format("GET /?error=access_denied&state={} HTTP/1.1\r\n\r\n", STATE) });
+	});
+	aDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	CHECK(aSecond->Wait(STATE, aQuery, [&] { return std::chrono::steady_clock::now() < aDeadline; }, anError));
+	aSecond->Reply(RedirectListener::Outcome::DENIED);
+	aRefusingBrowser.join();
+	CHECK_EQ(aQuery["error"], "access_denied");
+	CHECK_EQ(StatusLine(aRefusal), "HTTP/1.1 200 OK");
+	CHECK(aRefusal.find("was not given access") != std::string::npos);
+
+	// a cancelled wait answers nothing; a listener that goes away before Reply tells its browser that it failed
+	std::unique_ptr<RedirectListener> aThird = MakeLoopbackListener();
+	CHECK(aThird->Open(anError));
+	int anAsks = 0;
+	CHECK(!aThird->Wait(STATE, aQuery, [&] { return ++anAsks < 3; }, anError));
+	CHECK_EQ(anError, "");
+	CHECK_EQ(anAsks, 3);
+	std::string aLeft;
+	std::thread aLeftBrowser([&, aThirdPort = aThird->Port()]
+	{
+		aLeft = Exchange(AF_INET, aThirdPort, { std::format("GET /?code=c&state={} HTTP/1.1\r\n\r\n", STATE) });
+	});
+	aDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	CHECK(aThird->Wait(STATE, aQuery, [&] { return std::chrono::steady_clock::now() < aDeadline; }, anError));
+	aThird.reset();
+	aLeftBrowser.join();
+	CHECK_EQ(StatusLine(aLeft), "HTTP/1.1 200 OK");
+	CHECK(aLeft.find("did not go through") != std::string::npos);
+}
+
+// libcurl gives a request up once the stop function says so, as Stop Sign-In does with the token request. A listener
+// plays the server: it answers a request to /x at once and keeps the one with the state of a sign-in waiting.
+void TestCurlStop()
+{
+	GlobalInit();
+	std::unique_ptr<RedirectListener> aListener = MakeLoopbackListener();
+	std::string anError;
+	if (!aListener->Open(anError))
+	{
+		NotListening(__LINE__, anError);
+		return;
+	}
+	// straight to the loopback address, also where a proxy is set for everything else
+#ifdef _WIN32
+	_putenv_s("NO_PROXY", "127.0.0.1,localhost");
+#else
+	setenv("no_proxy", "127.0.0.1,localhost", 1);
+	setenv("NO_PROXY", "127.0.0.1,localhost", 1);
+#endif
+
+	const std::string STATE = "curl-stop-state";
+	std::atomic<bool> aServing{ true };
+	bool anAnswered = false;
+	Query aQuery;
+	std::string aWaitError;
+	std::thread aServer([&]
+	{
+		auto aDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+		anAnswered = aListener->Wait(STATE, aQuery, [&] { return aServing && std::chrono::steady_clock::now() < aDeadline; }, aWaitError);
+	});
+
+	std::string aBase = std::format("http://127.0.0.1:{}", aListener->Port());
+	HttpRequest aRequest;
+	aRequest.mUrl = aBase + "/x";
+	HttpResponse aResponse = MakeCurlTransport([] { return false; })->Request(aRequest);
+	CHECK_EQ(aResponse.mStatus, 404L);		// it does reach the listener
+	CHECK_EQ(aResponse.mError, "");
+
+	auto aStart = std::chrono::steady_clock::now();
+	auto aStop = [&] { return std::chrono::steady_clock::now() - aStart >= std::chrono::milliseconds(300); };
+	aRequest.mUrl = std::format("{}/?state={}&code=c", aBase, STATE);
+	aResponse = MakeCurlTransport(aStop)->Request(aRequest);
+	auto aTook = std::chrono::steady_clock::now() - aStart;
+	CHECK_EQ(aResponse.mStatus, 0L);
+	CHECK_EQ(aResponse.mError, "stopped");
+	CHECK(aTook >= std::chrono::milliseconds(300));
+	CHECK(aTook < std::chrono::seconds(3));		// asked about once a second, not only at the 30 second time limit
+
+	aServing = false;
+	aServer.join();
+	CHECK(anAnswered);
+	CHECK_EQ(aQuery["code"], "c");
+	CHECK_EQ(aWaitError, "");
 }
 
 void TestOneDriveSync()
@@ -1411,6 +2273,7 @@ void TestOneDriveSync()
 	Token aSaved;
 	CHECK(LoadToken(a.mState, Provider::ONEDRIVE, aSaved));
 	CHECK(aServer.mRefreshTokens.contains(aSaved.mRefresh));
+	CHECK_EQ(aSaved.mClient, "onedrive-client");
 	a.Start(OneDriveConfig(), MakeOneDriveStore(OneDriveConfig(), a.mState, LinkTo(aServer)));
 	b.Write("user1.dat", "level 1-2");
 	CHECK_EQ(b.Sync(), Result::OK);
@@ -1428,6 +2291,14 @@ void TestOneDriveSync()
 	// only the save files are in the cloud folder, under the folder name
 	for (const auto& [aPath, anItem] : aServer.mItems)
 		CHECK(aPath == "PvZPortable" || aPath.starts_with("PvZPortable/"));
+
+	// a sign-in saved while a sync refreshes the one it replaces: that refresh does not save over it
+	a.Start(OneDriveConfig(), MakeOneDriveStore(OneDriveConfig(), a.mState, LinkTo(aServer)));
+	aServer.Before([](const HttpRequest& theRequest) { return theRequest.mUrl == "https://login.microsoftonline.com/common/oauth2/v2.0/token"; },
+		[&] { a.SignIn(Provider::ONEDRIVE, "m-new-sign-in", "drive-42/approot-id"); });
+	CHECK_EQ(a.Sync(), Result::OK);
+	CHECK(LoadToken(a.mState, Provider::ONEDRIVE, aSaved));
+	CHECK_EQ(aSaved.mRefresh, "m-new-sign-in");
 }
 
 void TestOneDriveConflicts()
@@ -1527,6 +2398,9 @@ int main()
 {
 	gRoot = fs::temp_directory_path() / std::format("cloudsync-test-{}", std::chrono::steady_clock::now().time_since_epoch().count());
 	fs::create_directories(gRoot);
+#ifndef _WIN32
+	std::signal(SIGPIPE, SIG_IGN);	// a write to a connection the listener already closed must fail, not end the tests
+#endif
 
 	const std::pair<const char*, void (*)()> TESTS[] = {
 		{ "json", TestJson },
@@ -1539,6 +2413,9 @@ int main()
 		{ "webdav weak etags", TestWebDavWeakETags },
 		{ "webdav errors", TestWebDavErrors },
 		{ "keep local, damaged cloud", TestKeepLocalDamagedCloud },
+		{ "pkce", TestPkce },
+		{ "loopback listener", TestLoopback },
+		{ "curl stop", TestCurlStop },
 		{ "google sign-in", TestGoogleSignIn },
 		{ "google sync", TestGoogleSync },
 		{ "google conditions", TestGoogleConditions },
@@ -1548,16 +2425,19 @@ int main()
 		{ "onedrive conflicts", TestOneDriveConflicts },
 		{ "store ids", TestStoreIds },
 	};
+	int aSkipped = 0;
 	for (const auto& [aName, aTest] : TESTS)
 	{
 		gTest = aName;
+		gSkipped.clear();
 		int aBefore = gFailures;
 		aTest();
-		std::cout << std::format("{:<28} {}\n", aName, gFailures == aBefore ? "ok" : "FAILED");
+		aSkipped += !gSkipped.empty();
+		std::cout << std::format("{:<28} {}\n", aName, gFailures != aBefore ? "FAILED" : gSkipped.empty() ? "ok" : "skipped: " + gSkipped);
 	}
 
 	std::error_code anError;
 	fs::remove_all(gRoot, anError);
-	std::cout << std::format("{} checks, {} failed\n", gChecks, gFailures);
+	std::cout << std::format("{} checks, {} failed, {} tests skipped\n", gChecks, gFailures, aSkipped);
 	return gFailures == 0 ? 0 : 1;
 }

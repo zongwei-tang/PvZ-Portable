@@ -29,29 +29,30 @@ bool				ApplySettings(const CloudSync::Config& theConfig);	// writes cloudsave.i
 CloudSync::Result	SyncNow();		// blocks until done; a conflict is asked about once the dialogs are closed
 std::string			StatusText();
 
-// Browser sign-in to Google Drive or OneDrive, run on its own thread: the player types a code on any device.
+// Sign-in to Google Drive or OneDrive in the player's browser. The wait for the browser runs on its own thread.
 struct SignInState
 {
 	enum class Phase
 	{
 		IDLE,
-		STARTING,	// asking for a code
-		WAITING,	// showing the code, waiting for the player
+		WAITING,	// the sign-in page is up to the player, then the sign-in is fetched
 		DONE,
 		FAILED,
 	};
 
 	Phase					mPhase = Phase::IDLE;
 	CloudSync::Provider		mProvider = CloudSync::Provider::WEBDAV;
-	std::string				mUserCode;
-	std::string				mUrl;
+	std::string				mPage;		// the provider's sign-in page, for the browser
 	std::string				mMessage;
-	int						mCodeSerial = 0;	// counts the codes handed out, so each one opens the browser once
+	bool					mAnswered = false;	// WAITING: the browser came back, the sign-in is being fetched
 };
 
-bool		StartSignIn(CloudSync::Provider theProvider);	// with the settings last applied
+// With the settings last applied. False for a provider without sign-in, or while the last sign-in is still running
+// or stopping; otherwise the state is WAITING, for the caller to open mPage in the browser, or FAILED.
+bool		StartSignIn(CloudSync::Provider theProvider);
 void		CancelSignIn();
 SignInState	GetSignIn();									// also finishes a sign-in that just completed
+void		ClearSignIn();									// back to IDLE from DONE or FAILED, once the player saw it
 bool		IsSignedIn(CloudSync::Provider theProvider);
 std::string	AccountText(CloudSync::Provider theProvider);	// "Signed in to OneDrive." and the like
 void		SignOut(CloudSync::Provider theProvider);		// forgets the sign-in on this device

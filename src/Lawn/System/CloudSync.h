@@ -7,6 +7,7 @@
 #ifndef __CLOUDSYNC_H__
 #define __CLOUDSYNC_H__
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -59,6 +60,7 @@ bool		WriteConfigTemplate(const std::filesystem::path& thePath);
 std::string	GoogleClientId(const Config& theConfig);
 std::string	GoogleClientSecret(const Config& theConfig);
 std::string	OneDriveClientId(const Config& theConfig);
+std::string	ClientId(const Config& theConfig);		// the one of theConfig.mProvider; empty for WebDAV
 bool		HasBuiltInClientId(Provider theProvider);
 
 bool		IsSyncedFileName(std::string_view theName);
@@ -146,7 +148,8 @@ public:
 	virtual HttpResponse	Request(const HttpRequest& theRequest) = 0;
 };
 
-std::unique_ptr<Transport>	MakeCurlTransport();
+// theStop, when given, is asked about once a second while a request runs: true gives it up, as if offline.
+std::unique_ptr<Transport>	MakeCurlTransport(std::function<bool()> theStop = nullptr);
 
 // One cloud folder. Paths are relative to it ("manifest.txt", "files/user1.dat.0123456789abcdef").
 class Store
@@ -193,26 +196,87 @@ struct Token
 	std::string	mRefresh;
 	std::string	mAccount;		// stable id of the account, so signing in to another one starts a new sync history
 	std::string	mAccountName;	// shown to the player, may be empty
+	std::string	mClient;		// the client ID it was issued to; empty in files from before it was kept
 };
 
+// The token files are read and written under one lock: a new sign-in is saved on its own thread while the sync
+// thread may be saving the refresh token of the one it replaces.
 std::filesystem::path	TokenPath(const std::filesystem::path& theStateDir, Provider theProvider);
 bool		LoadToken(const std::filesystem::path& theStateDir, Provider theProvider, Token& theToken);
+// The sign-in theConfig can use: one to theConfig.mProvider issued to the client ID theConfig names, or to a client
+// not kept. A refresh token is no good with another client.
+bool		LoadTokenFor(const std::filesystem::path& theStateDir, const Config& theConfig, Token& theToken);
 bool		SaveToken(const std::filesystem::path& theStateDir, Provider theProvider, const Token& theToken);
+// Saves theToken only over a file that still holds the refresh token theOld, so a refresh never undoes a sign-in or
+// sign-out made meanwhile.
+bool		ReplaceToken(const std::filesystem::path& theStateDir, Provider theProvider, const std::string& theOld, const Token& theToken);
 void		DeleteToken(const std::filesystem::path& theStateDir, Provider theProvider);
 
-struct DeviceCode
+using Query = std::map<std::string, std::string>;
+
+// Where the browser comes back to after the player signed in: a small HTTP listener on the loopback interface
+// (RFC 8252 section 7.3). Tests swap in their own.
+class RedirectListener
 {
-	std::string	mUserCode;		// for the player to type in
-	std::string	mUrl;			// where to type it
-	std::string	mDeviceCode;
-	int			mInterval = 5;
-	int			mExpiresIn = 900;
+public:
+	// what the browser is told in the end
+	enum class Outcome
+	{
+		DONE,		// signed in
+		DENIED,		// the player did not give the game access
+		FAILED,		// the game says why
+	};
+
+	virtual ~RedirectListener() = default;
+
+	// Starts listening on a free port of the loopback interface.
+	virtual bool	Open(std::string& theError) = 0;
+	virtual int		Port() const = 0;
+	// Waits for a request to "/" that carries a code or an error and whose state is theState, stops listening and
+	// returns its query; that browser then waits for Reply. The other requests it reads are answered with an error
+	// page (a TLS handshake is just closed), and connections still open when it stops listening are closed unanswered.
+	// Returns false with theError empty once theKeepWaiting, asked about ten times a second, returns false.
+	virtual bool	Wait(const std::string& theState, Query& theQuery, const std::function<bool()>& theKeepWaiting,
+						std::string& theError) = 0;
+	// Answers the browser Wait returned for with a page about theOutcome. A listener that goes away first answers
+	// it with FAILED.
+	virtual void	Reply(Outcome theOutcome) = 0;
 };
 
-// OAuth device sign-in (RFC 8628) to theConfig.mProvider: theOnCode gets the code to show, theWait sleeps that many
-// seconds between polls and returns false to cancel. Blocks until the player approved, declined or the code expired.
-Result		DeviceSignIn(Transport& theHttp, const Config& theConfig, const std::function<void(const DeviceCode&)>& theOnCode,
-						const std::function<bool(int)>& theWait, Token& theToken, std::string& theError);
+std::unique_ptr<RedirectListener>	MakeLoopbackListener();
+
+// OAuth sign-in to theConfig.mProvider in the player's browser: the authorization code flow with PKCE (RFC 7636),
+// answered at a loopback address.
+class BrowserSignIn
+{
+public:
+	explicit BrowserSignIn(const Config& theConfig, std::unique_ptr<RedirectListener> theListener = nullptr);
+	~BrowserSignIn();
+
+	BrowserSignIn(const BrowserSignIn&) = delete;
+	BrowserSignIn& operator=(const BrowserSignIn&) = delete;
+
+	// Gets ready for the answer and makes the address of the provider's sign-in page, for the browser to open.
+	Result		Start(std::string& thePage, std::string& theError);
+	// Blocks until the browser came back and the sign-in was fetched, the player declined, theKeepWaiting returned
+	// false or theTimeLimit ran out. theOnAnswer is called once the browser came back, before the sign-in is fetched,
+	// and theOnSignedIn with the sign-in, to keep it, before the browser is told that it is done: false from it fails
+	// the sign-in. The browser is told how it went at the end, and only an OK tells it the sign-in is done: keep that
+	// one even if theKeepWaiting has turned false since.
+	Result		Finish(Transport& theHttp, const std::function<bool()>& theKeepWaiting, const std::function<void()>& theOnAnswer,
+					const std::function<bool(const Token&)>& theOnSignedIn, Token& theToken, std::string& theError,
+					std::chrono::seconds theTimeLimit = std::chrono::minutes(10));
+
+private:
+	Config								mConfig;
+	std::unique_ptr<RedirectListener>	mListener;
+	std::string							mVerifier;
+	std::string							mState;
+	std::string							mRedirect;
+};
+
+std::string	Sha256(std::string_view theData);		// the 32 bytes of the digest
+std::string	Base64Url(std::string_view theData);	// RFC 4648 section 5, without padding
 
 struct ConflictInfo
 {

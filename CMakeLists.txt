@@ -134,10 +134,11 @@ else()
 endif()
 option(CLOUD_SAVE "Enable cloud save to WebDAV, Google Drive and OneDrive (needs libcurl)" ${CLOUD_SAVE_DEFAULT})
 # Google Drive and OneDrive sign in through an OAuth app registered by whoever ships the build. Without these, players
-# enter the client ID of their own app in the cloud save settings (see the README).
-set(CLOUD_SAVE_GOOGLE_CLIENT_ID "" CACHE STRING "Google OAuth client ID (type: TVs and Limited Input devices) built in for Google Drive")
+# enter the client of their own app in the cloud save settings (see the README).
+set(CLOUD_SAVE_GOOGLE_CLIENT_ID "" CACHE STRING "Google OAuth client ID (type: Desktop app) built in for Google Drive")
 set(CLOUD_SAVE_GOOGLE_CLIENT_SECRET "" CACHE STRING "Client secret that goes with CLOUD_SAVE_GOOGLE_CLIENT_ID")
-set(CLOUD_SAVE_ONEDRIVE_CLIENT_ID "" CACHE STRING "Microsoft app registration (public client) ID built in for OneDrive")
+set(CLOUD_SAVE_ONEDRIVE_CLIENT_ID "" CACHE STRING
+	"Microsoft app registration ID (platform: Mobile and desktop applications, redirect URI http://localhost) built in for OneDrive")
 option(CLOUD_SAVE_TESTS "Build cloudsync-test, offline tests of the cloud save protocol" OFF)
 
 if(EMSCRIPTEN)
@@ -228,6 +229,13 @@ endif()
 
 if(CLOUD_SAVE AND CURL_FOUND)
 	set(_cloud_save_definitions PVZP_CLOUD_SAVE)
+	# Google signs a Desktop app client in with its secret, and the secret belongs to that one client
+	if(NOT "${CLOUD_SAVE_GOOGLE_CLIENT_ID}" STREQUAL "" AND "${CLOUD_SAVE_GOOGLE_CLIENT_SECRET}" STREQUAL "")
+		message(FATAL_ERROR "CLOUD_SAVE_GOOGLE_CLIENT_ID needs CLOUD_SAVE_GOOGLE_CLIENT_SECRET, the secret of that Desktop app client")
+	endif()
+	if("${CLOUD_SAVE_GOOGLE_CLIENT_ID}" STREQUAL "" AND NOT "${CLOUD_SAVE_GOOGLE_CLIENT_SECRET}" STREQUAL "")
+		message(FATAL_ERROR "CLOUD_SAVE_GOOGLE_CLIENT_SECRET is of no use without CLOUD_SAVE_GOOGLE_CLIENT_ID")
+	endif()
 	foreach(_client GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET ONEDRIVE_CLIENT_ID)
 		if(NOT "${CLOUD_SAVE_${_client}}" STREQUAL "")
 			if(NOT "${CLOUD_SAVE_${_client}}" MATCHES "^[A-Za-z0-9._-]+$")
@@ -238,13 +246,22 @@ if(CLOUD_SAVE AND CURL_FOUND)
 	endforeach()
 	target_compile_definitions(pvz-portable PRIVATE ${_cloud_save_definitions})
 	target_link_libraries(pvz-portable PRIVATE CURL::libcurl)
+	if(HAIKU)
+		target_link_libraries(pvz-portable PRIVATE network)	# the sockets the browser sign-in listens on
+	endif()
 
 	if(CLOUD_SAVE_TESTS)
-		add_executable(cloudsync-test tests/cloudsync_test.cpp src/Lawn/System/CloudSync.cpp src/Lawn/System/CloudOAuth.cpp)
+		add_executable(cloudsync-test tests/cloudsync_test.cpp src/Lawn/System/CloudSync.cpp src/Lawn/System/CloudOAuth.cpp
+			src/Lawn/System/CloudLoopback.cpp)
 		target_include_directories(cloudsync-test PRIVATE src/Lawn/System)
 		target_compile_features(cloudsync-test PRIVATE cxx_std_20)
 		target_compile_definitions(cloudsync-test PRIVATE PVZP_CLOUD_SAVE)
 		target_link_libraries(cloudsync-test PRIVATE CURL::libcurl Threads::Threads)
+		if(WIN32)
+			target_link_libraries(cloudsync-test PRIVATE ws2_32)
+		elseif(HAIKU)
+			target_link_libraries(cloudsync-test PRIVATE network)
+		endif()
 	endif()
 endif()
 
