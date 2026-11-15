@@ -639,6 +639,28 @@ public:
 	}
 };
 
+// The code of a Graph error, {"error": {"code": "nameAlreadyExists", ...}}, which Graph says to go by: a status such as
+// 409 has more than one cause.
+std::string GraphErrorCode(const HttpResponse& theResponse)
+{
+	Json::Value aJson;
+	const Json::Value* anError = Json::Parse(theResponse.mBody, aJson) ? aJson.Find("error") : nullptr;
+	return anError && anError->mType == Json::Value::Type::OBJECT ? anError->Str("code") : std::string();
+}
+
+// Another device got there first: a file of that name made since (conflictBehavior "fail"), or a version other than
+// the one read (If-Match), which Graph may also give as a 409 with resourceModified ("changed since the caller last
+// read it"). Any other 409 is something else, such as a parent folder that is not there.
+bool LostRace(const HttpResponse& theResponse)
+{
+	if (theResponse.mStatus == 412)
+		return true;
+	if (theResponse.mStatus != 409)
+		return false;
+	std::string aCode = GraphErrorCode(theResponse);
+	return aCode == "nameAlreadyExists" || aCode == "resourceModified";
+}
+
 // Apps/<app name>/<folder>/ in the player's OneDrive, addressed by path, with eTags on the manifest.
 class OneDriveStore : public OAuthStore
 {
@@ -666,7 +688,7 @@ class OneDriveStore : public OAuthStore
 		Result aResult = Call(aRequest, aResponse);
 		if (aResult != Result::OK)
 			return aResult;
-		if (aResponse.mStatus == 409 || aResponse.mStatus == 412)
+		if (LostRace(aResponse))
 			return Fail(Result::CONFLICT, RACE_LOST);
 		aResult = Check(aResponse, aWhat);
 		if (aResult != Result::OK)
@@ -684,8 +706,22 @@ class OneDriveStore : public OAuthStore
 		anUpload.mBody = &theBody;
 		anUpload.mHeaders.push_back(std::format("Content-Range: bytes 0-{}/{}", theBody.size() - 1, theBody.size()));
 		HttpResponse anUploaded = mHttp->Request(anUpload);
-		if (anUploaded.mStatus == 409 || anUploaded.mStatus == 412)
+		if (anUploaded.mStatus == 200 || anUploaded.mStatus == 201)
+			return Result::OK;
+
+		// Otherwise Graph keeps the session, and what was uploaded to it, until the session expires: cancel it. But not
+		// after no answer at all (offline, or stopped), when the cancel would most likely get none either.
+		if (anUploaded.mStatus != 0)
+		{
+			HttpRequest aCancel;
+			aCancel.mMethod = "DELETE";
+			aCancel.mUrl = anUploadUrl;
+			mHttp->Request(aCancel);
+		}
+		if (LostRace(anUploaded))
 			return Fail(Result::CONFLICT, RACE_LOST);
+		if (IsSuccess(anUploaded.mStatus))		// 202: it waits for more of a file that was sent whole
+			return Fail(Result::FAILED, aWhat + " failed: OneDrive did not take the whole file");
 		return Check(anUploaded, aWhat);
 	}
 
@@ -745,6 +781,7 @@ public:
 
 	Result Put(const std::string& thePath, const std::string& theBody, Condition theCondition, const std::string& theVersion) override
 	{
+		// An upload session cannot take an empty file. Only the manifest is written with a condition, and it is never empty.
 		if (theCondition != Condition::ANY && !theBody.empty())
 			return PutConditional(thePath, theBody, theCondition, theVersion);
 
@@ -776,7 +813,7 @@ public:
 		if (mFoldersReady)
 			return Result::OK;
 
-		// <folder>/files/, one level at a time; 409 means it is already there
+		// <folder>/files/, one level at a time; a 409 with nameAlreadyExists means it is already there
 		std::vector<std::string> aSegments;
 		std::string aPath = Name("files");
 		for (size_t aStart = 0; aStart <= aPath.size();)
@@ -803,7 +840,7 @@ public:
 			Result aResult = Call(aRequest, aResponse);
 			if (aResult != Result::OK)
 				return aResult;
-			if (aResponse.mStatus != 409)
+			if (aResponse.mStatus != 409 || GraphErrorCode(aResponse) != "nameAlreadyExists")
 			{
 				aResult = Check(aResponse, "creating the cloud folder");
 				if (aResult != Result::OK)

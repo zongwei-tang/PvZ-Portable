@@ -181,12 +181,14 @@ HttpResponse Answer(long theStatus, std::string theBody = "", std::string theETa
 }
 
 // An in-memory server. A hook runs once, right before the first request it matches is answered, so a test can let
-// another device act in the middle of a sync.
+// another device act in the middle of a sync. Instead gives the first request it matches another answer, once.
 struct Server
 {
 	bool										mOffline = false;
 	std::vector<std::string>					mLog;
 	std::function<bool(const HttpRequest&)>		mHook;
+	std::function<bool(const HttpRequest&)>		mInsteadMatch;
+	HttpResponse								mInstead;
 
 	virtual ~Server() = default;
 	virtual HttpResponse Handle(const HttpRequest& theRequest) = 0;
@@ -207,7 +209,19 @@ struct Server
 			aResponse.mError = "Could not resolve host";
 			return aResponse;
 		}
+		if (mInsteadMatch && mInsteadMatch(theRequest))
+		{
+			mInsteadMatch = nullptr;
+			return std::move(mInstead);
+		}
 		return Handle(theRequest);
+	}
+
+	// the server does nothing for that request: theResponse is all there is to it
+	void Instead(std::function<bool(const HttpRequest&)> theMatch, HttpResponse theResponse)
+	{
+		mInsteadMatch = std::move(theMatch);
+		mInstead = std::move(theResponse);
 	}
 
 	void Before(std::function<bool(const HttpRequest&)> theMatch, std::function<void()> theAction)
@@ -883,22 +897,29 @@ struct OneDriveServer : Server
 		return Answer(201, std::format(R"({{"id":"folder-{}","name":{},"folder":{{"childCount":0}}}})", mNextTag, Json::Quote(aJson.Str("name"))));
 	}
 
+	// The whole file in one range commits the session. As at Microsoft, a session whose commit failed stays until it
+	// expires, and a DELETE on its address cancels it.
 	HttpResponse Complete(const HttpRequest& theRequest)
 	{
 		auto aSession = mSessions.find(theRequest.mUrl);
 		if (aSession == mSessions.end())
 			return Answer(404, R"({"error":{"code":"itemNotFound","message":"The upload session does not exist"}})");
+		if (theRequest.mMethod == "DELETE")
+		{
+			mSessions.erase(aSession);
+			return Answer(204);
+		}
 		std::string aBody = Body(theRequest);
 		if (theRequest.mMethod != "PUT" || Header(theRequest, "Content-Range") != std::format("bytes 0-{}/{}", aBody.size() - 1, aBody.size()))
 			return Answer(400, R"({"error":{"code":"invalidRange","message":"Bad Content-Range"}})");
 
 		Session aDone = aSession->second;
-		mSessions.erase(aSession);
 		auto anItem = mItems.find(aDone.mPath);
 		if (aDone.mFail && anItem != mItems.end())
-			return Answer(409, R"({"error":{"code":"nameAlreadyExists","message":"The specified item name already exists."}})");
+			return Answer(409, R"({"error":{"code":"nameAlreadyExists","message":"Another file exists with the same name as the uploaded session."}})");
 		if (!aDone.mIfMatch.empty() && (anItem == mItems.end() || ETag(anItem->second) != aDone.mIfMatch))
 			return Answer(412, R"({"error":{"code":"preconditionFailed","message":"ETag does not match current item's value"}})");
+		mSessions.erase(aSession);
 		mItems[aDone.mPath] = Item{ false, aBody, mNextTag++ };
 		return Answer(201, std::format(R"({{"id":"item","eTag":{}}})", Json::Quote(ETag(mItems[aDone.mPath]))));
 	}
@@ -2318,6 +2339,9 @@ void TestOneDriveConflicts()
 	aServer.Before(IsUpload, [&] { CHECK_EQ(b.Sync(), Result::OK); });
 	CHECK_EQ(a.Sync(), Result::CONFLICT);
 	CHECK_EQ(a.mEngine->GetConflict().mRemote.mDevice, "odc-b");
+	// a session turned down stays until it expires, with what was uploaded to it, unless it is cancelled
+	CHECK_EQ(aServer.Count("DELETE https://up.example/"), 1);
+	CHECK(aServer.mSessions.empty());
 	CHECK_EQ(a.UseCloud(), Result::OK);
 
 	// b commits right before a: a's If-Match fails
@@ -2335,6 +2359,49 @@ void TestOneDriveConflicts()
 	CHECK(aServer.Manifest()->mBody.find("device odc-a") != std::string::npos);
 	CHECK_EQ(b.Sync(), Result::OK);
 	CHECK_EQ(b.Read("user1.dat"), "a3");
+
+	// a 409 for something else than a name taken is no race: nothing to ask the player about, and the next sync goes on
+	a.Write("user1.dat", "a4");
+	aServer.Instead(IsSession, Answer(409, R"({"error":{"code":"itemNotFound","message":"The parent folder does not exist"}})"));
+	CHECK_EQ(a.Sync(), Result::FAILED);
+	CHECK_EQ(a.Error(), "uploading the cloud manifest failed: The parent folder does not exist");
+	CHECK_EQ(a.Sync(), Result::OK);
+	CHECK_EQ(b.Sync(), Result::OK);
+	CHECK_EQ(b.Read("user1.dat"), "a4");
+
+	// a version changed since, given as a 409 with resourceModified rather than a 412: the race is lost all the same
+	a.Write("user1.dat", "a5");
+	b.Write("user1.dat", "b5");
+	aServer.Before(IsSession, [&]
+	{
+		CHECK_EQ(b.Sync(), Result::OK);
+		aServer.Instead(IsSession, Answer(409, R"({"error":{"code":"resourceModified","message":"The resource has changed since the caller last read it"}})"));
+	});
+	CHECK_EQ(a.Sync(), Result::CONFLICT);
+	CHECK_EQ(a.UseCloud(), Result::OK);
+	CHECK_EQ(a.Read("user1.dat"), "b5");
+
+	// the upload is answered as though more of the file were to come: the commit failed, and the session is cancelled
+	a.Write("user1.dat", "a6");
+	aServer.Instead(IsUpload, Answer(202, R"({"expirationDateTime":"2026-11-15T10:00:00Z","nextExpectedRanges":["0-"]})"));
+	CHECK_EQ(a.Sync(), Result::FAILED);
+	CHECK_EQ(a.Error(), "uploading the cloud manifest failed: OneDrive did not take the whole file");
+	CHECK_EQ(aServer.Count("DELETE https://up.example/"), 2);
+	CHECK(aServer.mSessions.empty());
+	CHECK_EQ(a.Sync(), Result::OK);
+	CHECK_EQ(b.Sync(), Result::OK);
+	CHECK_EQ(b.Read("user1.dat"), "a6");
+
+	// making the cloud folder: a 409 means that it is there already only with nameAlreadyExists
+	a.Start(OneDriveConfig(), MakeOneDriveStore(OneDriveConfig(), a.mState, LinkTo(aServer)));
+	a.Write("user1.dat", "a7");
+	aServer.Instead([](const HttpRequest& theRequest) { return theRequest.mUrl.ends_with("/children"); },
+		Answer(409, R"({"error":{"code":"notAllowed","message":"The app folder cannot be changed right now"}})"));
+	CHECK_EQ(a.Sync(), Result::FAILED);
+	CHECK_EQ(a.Error(), "creating the cloud folder failed: The app folder cannot be changed right now");
+	CHECK_EQ(a.Sync(), Result::OK);
+	CHECK(aServer.mSessions.empty());
+	CHECK_EQ(aServer.mTokensOnPreAuthorized, 0);	// nor do the cancels carry an access token
 
 	// a server that turns "fail" down at once rather than when the upload completes
 	OneDriveServer anEarly;
