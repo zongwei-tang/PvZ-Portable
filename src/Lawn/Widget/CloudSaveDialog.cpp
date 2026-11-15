@@ -480,14 +480,16 @@ bool CloudSaveDialog::Apply(bool theForSignIn)
 		return false;
 	}
 	mSavedForSignIn = theForSignIn;
+	if (!theForSignIn)
+		mOpened = CloudSave::GetSettings();		// saved for good, as by Save
 	// a sign-in counts only with the client ID it was made with, which these settings may have changed
 	mSignedIn = CloudSave::IsSignedIn(mProvider);
 	UpdateButtons();
 	return true;
 }
 
-// Cancel also takes back what Sign In saved, so trying another service never quietly stops the one in use.
-// The sign-in itself is kept: picking that service later and saving needs no new one.
+// Cancel also takes back what Sign In saved, so trying another service never quietly stops the one in use, but
+// not what Sync Now saved. The sign-in itself is kept: picking that service later and saving needs no new one.
 void CloudSaveDialog::Close(bool theCancel)
 {
 	if (theCancel && SigningIn())
@@ -534,7 +536,9 @@ void CloudSaveDialog::ButtonDepress(int theId)
 		}
 		else if (Apply(true))
 		{
-			if (!CloudSave::StartSignIn(mProvider))
+			if (mSignedIn)
+				ShowIdleStatus();	// these settings have a sign-in already, made with the client ID they name
+			else if (!CloudSave::StartSignIn(mProvider))
 				ShowMessage("The last sign-in is still stopping. Try again in a moment.");
 			else
 			{
@@ -554,7 +558,8 @@ void CloudSaveDialog::ButtonDepress(int theId)
 	case SYNC_BUTTON_ID:
 		if (!mEnabledCheckbox->mChecked)
 			ShowMessage("Tick Enabled to sync.");
-		else if (CloudSync::IsOAuth(mProvider) && !mSignedIn)
+		// a sign-in that the settings about to be saved can use counts too, as after going back to its client ID
+		else if (CloudSync::IsOAuth(mProvider) && !mSignedIn && !CloudSave::IsSignedIn(ReadFields()))
 			ShowMessage(std::format("Sign in to {} first.", CloudSync::ProviderName(mProvider)));
 		else if (Apply(false))
 		{

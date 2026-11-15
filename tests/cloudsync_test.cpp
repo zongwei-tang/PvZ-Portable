@@ -2336,6 +2336,17 @@ void TestOneDriveSync()
 	CHECK(LoadToken(a.mState, Provider::ONEDRIVE, aSaved));
 	CHECK(aServer.mRefreshTokens.contains(aSaved.mRefresh));
 	CHECK_EQ(aSaved.mClient, "onedrive-client");
+
+	// or, when no other refresh comes, as the session ends (the game ends one before it starts the next)
+	fs::create_directories(aBlocked);
+	aServer.mAccessTokens.clear();
+	CHECK_EQ(a.Sync(), Result::OK);
+	fs::remove(aBlocked);
+	a.mEngine.reset();
+	CHECK(LoadToken(a.mState, Provider::ONEDRIVE, aSaved));
+	CHECK(aServer.mRefreshTokens.contains(aSaved.mRefresh));
+	a.Start(OneDriveConfig(), MakeOneDriveStore(OneDriveConfig(), a.mState, LinkTo(aServer)));
+	CHECK_EQ(a.Sync(), Result::OK);
 }
 
 void TestOneDriveConflicts()

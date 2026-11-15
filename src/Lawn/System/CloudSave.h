@@ -53,7 +53,8 @@ bool		StartSignIn(CloudSync::Provider theProvider);
 void		CancelSignIn();
 SignInState	GetSignIn();									// also finishes a sign-in that just completed
 void		ClearSignIn();									// back to IDLE from DONE or FAILED, once the player saw it
-bool		IsSignedIn(CloudSync::Provider theProvider);
+bool		IsSignedIn(CloudSync::Provider theProvider);	// with the settings last applied
+bool		IsSignedIn(const CloudSync::Config& theConfig);	// with theConfig, such as settings about to be applied
 std::string	AccountText(CloudSync::Provider theProvider);	// "Signed in to OneDrive." and the like
 void		SignOut(CloudSync::Provider theProvider);		// forgets the sign-in on this device
 #else

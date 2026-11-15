@@ -49,8 +49,8 @@ public:
 	std::unique_ptr<LawnStoneButton>		mSignInButton;
 	std::unique_ptr<LawnStoneButton>		mSyncButton;
 	CloudSync::Config						mDraft;			// the fields of every service, as typed so far
-	CloudSync::Config						mOpened;		// the settings when the dialog opened
-	bool									mSavedForSignIn = false;	// Sign In saved settings that Save did not confirm yet
+	CloudSync::Config						mOpened;		// what Cancel goes back to: the settings when the dialog opened, or as Sync Now saved them
+	bool									mSavedForSignIn = false;	// Sign In saved settings that Save or Sync Now did not confirm yet
 	CloudSync::Provider						mProvider;
 	CloudSave::SignInState					mSignIn;
 	bool									mPageCopied = false;	// the address of the sign-in page is on the clipboard

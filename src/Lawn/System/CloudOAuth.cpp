@@ -296,6 +296,14 @@ public:
 		mOnFile = mToken;
 	}
 
+	// A refresh token that could not be saved when it came is tried once more as the session ends, so that the next
+	// start does not begin with the one it replaced. On the same terms: never over a newer sign-in or a sign-out.
+	~OAuthSession()
+	{
+		if (mToken.mRefresh != mOnFile.mRefresh || mToken.mClient != mOnFile.mClient)
+			ReplaceToken(mStateDir, mConfig.mProvider, mOnFile.mRefresh, mToken);
+	}
+
 	const Token&		GetToken() const { return mToken; }
 	const std::string&	GetError() const { return mError; }
 

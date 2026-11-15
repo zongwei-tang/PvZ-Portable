@@ -283,12 +283,18 @@ fs::path ConfigPath()
 	return Sexy::PathFromU8(Sexy::GetAppDataPath("cloudsave.ini"));
 }
 
-// The sign-in to theProvider that the settings last applied can use: one made with the client ID they name.
+// The sign-in to the service of theConfig that theConfig can use: one made with the client ID it names.
+bool LoadSignIn(const CloudSync::Config& theConfig, CloudSync::Token& theToken)
+{
+	return CloudSync::IsOAuth(theConfig.mProvider) && CloudSync::LoadTokenFor(StateDir(), theConfig, theToken);
+}
+
+// The same with the settings last applied.
 bool LoadSignIn(CloudSync::Provider theProvider, CloudSync::Token& theToken)
 {
 	CloudSync::Config aConfig = gConfig;
 	aConfig.mProvider = theProvider;
-	return CloudSync::IsOAuth(theProvider) && CloudSync::LoadTokenFor(StateDir(), aConfig, theToken);
+	return LoadSignIn(aConfig, theToken);
 }
 
 // Starts over with theConfig: drops the running engine and anything it was waiting for.
@@ -654,6 +660,12 @@ bool IsSignedIn(CloudSync::Provider theProvider)
 {
 	CloudSync::Token aToken;
 	return LoadSignIn(theProvider, aToken);
+}
+
+bool IsSignedIn(const CloudSync::Config& theConfig)
+{
+	CloudSync::Token aToken;
+	return LoadSignIn(theConfig, aToken);
 }
 
 std::string AccountText(CloudSync::Provider theProvider)
