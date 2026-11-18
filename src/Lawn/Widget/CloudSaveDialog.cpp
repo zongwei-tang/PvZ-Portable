@@ -490,9 +490,10 @@ bool CloudSaveDialog::Apply(bool theForSignIn)
 
 // Cancel also takes back what Sign In saved, so trying another service never quietly stops the one in use, but
 // not what Sync Now saved. The sign-in itself is kept: picking that service later and saving needs no new one.
+// Cancel stops a sign-in started in this dialog, but not one that an earlier dialog saved and that still runs.
 void CloudSaveDialog::Close(bool theCancel)
 {
-	if (theCancel && SigningIn())
+	if (theCancel && SigningIn() && mStartedSignIn)
 		CloudSave::CancelSignIn();
 	if (theCancel && mSavedForSignIn)
 		CloudSave::ApplySettings(mOpened);
@@ -532,7 +533,12 @@ void CloudSaveDialog::ButtonDepress(int theId)
 		{
 			CloudSave::SignOut(mProvider);
 			mSignedIn = CloudSave::IsSignedIn(mProvider);
-			ShowMessage(std::format("Signed out of {} on this computer.", CloudSync::ProviderName(mProvider)));
+			// another program that has the file open (a virus scanner, say) can keep it from being deleted
+			if (mSignedIn)
+				ShowMessage(std::format("Could not sign out of {}: the sign-in file could not be deleted. Try again in a moment.",
+					CloudSync::ProviderName(mProvider)));
+			else
+				ShowMessage(std::format("Signed out of {} on this computer.", CloudSync::ProviderName(mProvider)));
 		}
 		else if (Apply(true))
 		{
@@ -545,6 +551,7 @@ void CloudSaveDialog::ButtonDepress(int theId)
 				mSignIn = CloudSave::GetSignIn();
 				if (mSignIn.mPhase == Phase::WAITING)
 				{
+					mStartedSignIn = true;
 					ShowIdleStatus();	// no message from before in place of the hint
 					OpenSignInPage();
 				}
