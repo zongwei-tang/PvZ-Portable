@@ -162,7 +162,7 @@ void CloudSaveDialog::Show(LawnApp* theApp)
 	CloudSaveDialog* aDialog = new CloudSaveDialog(theApp);
 	LawnApp::CenterDialog(aDialog, aDialog->mWidth, aDialog->mHeight);
 	theApp->AddDialog(Dialogs::DIALOG_CLOUD_SAVE_SETTINGS, aDialog);
-	theApp->mWidgetManager->SetFocus(aDialog->mFields[0].get());
+	aDialog->FocusFirstField();
 }
 
 int CloudSaveDialog::FieldCount() const
@@ -170,10 +170,17 @@ int CloudSaveDialog::FieldCount() const
 	switch (mProvider)
 	{
 	case CloudSync::Provider::WEBDAV:		return 3;	// server URL, username, password
-	case CloudSync::Provider::GOOGLE_DRIVE:	return 2;	// client ID, client secret
-	case CloudSync::Provider::ONEDRIVE:		return 1;	// client ID
+	// a build with a client of its own signs in with the button alone; cloudsave.ini can still name another client
+	case CloudSync::Provider::GOOGLE_DRIVE:	return CloudSync::HasBuiltInClientId(mProvider) ? 0 : 2;	// client ID, client secret
+	case CloudSync::Provider::ONEDRIVE:		return CloudSync::HasBuiltInClientId(mProvider) ? 0 : 1;	// client ID
 	}
 	return 0;
+}
+
+void CloudSaveDialog::FocusFirstField()
+{
+	if (mWidgetManager)
+		mWidgetManager->SetFocus(FieldCount() > 0 ? static_cast<Widget*>(mFields[0].get()) : this);
 }
 
 std::string* CloudSaveDialog::FieldValue(int theField)
@@ -232,7 +239,7 @@ void CloudSaveDialog::ShowFields()
 	}
 	if (mWidgetManager && std::any_of(std::begin(mFields), std::end(mFields), [this](const auto& aField)
 		{ return !aField->mVisible && mWidgetManager->mFocusWidget == aField.get(); }))
-		mWidgetManager->SetFocus(mFields[0].get());
+		FocusFirstField();
 }
 
 void CloudSaveDialog::UpdateButtons()
@@ -424,7 +431,8 @@ void CloudSaveDialog::KeyDown(KeyCode theKey)
 
 void CloudSaveDialog::FocusNextField(int theId)
 {
-	mWidgetManager->SetFocus(mFields[(theId + 1) % std::max(FieldCount(), 1)].get());
+	if (FieldCount() > 0)
+		mWidgetManager->SetFocus(mFields[(theId + 1) % FieldCount()].get());
 }
 
 void CloudSaveDialog::EditWidgetText(int theId, [[maybe_unused]] const std::string& theString)
@@ -470,7 +478,8 @@ bool CloudSaveDialog::Apply(bool theForSignIn)
 	{
 		ShowMessage(ClientHint(aConfig.mProvider));
 		bool aSecretMissing = aConfig.mProvider == CloudSync::Provider::GOOGLE_DRIVE && !CloudSync::GoogleClientId(aConfig).empty();
-		mWidgetManager->SetFocus(mFields[aSecretMissing ? 1 : 0].get());
+		if (FieldCount() > 0)
+			mWidgetManager->SetFocus(mFields[aSecretMissing ? 1 : 0].get());
 		return false;
 	}
 

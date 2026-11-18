@@ -79,6 +79,7 @@ public:
 	using LawnDialog::CheckboxChecked;
 	void				CheckboxChecked(int theId, bool theChecked) override;
 	void				FocusNextField(int theId);
+	void				FocusFirstField();		// the first field shown, else the dialog
 
 private:
 	int					FieldCount() const;			// the first this many fields are shown

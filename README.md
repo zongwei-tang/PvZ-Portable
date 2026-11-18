@@ -336,7 +336,7 @@ Tick **Enabled**, enter the server URL, username and password, then press **Sync
 
 These sign in through the browser instead of with a password:
 
-1. Pick the service, enter the client ID (for Google also the client secret, see below), tick **Enabled** and press **Sign In**.
+1. Pick the service, tick **Enabled** and press **Sign In**. A build without a client of its own for the service also shows fields for the client ID (for Google also the client secret, see below); fill them in first.
 2. The game opens the sign-in page in your browser, and copies its address to the clipboard in case no page opens. Sign in there and allow the access. The browser then comes back to the game by itself and says when you can close the tab. It has to be a browser on the same computer, because it comes back to an address that only this computer can reach.
 3. Once the dialog shows your account, press **Save**.
 
@@ -396,7 +396,7 @@ To make a build that signs in without these steps, pass the client IDs, and the 
 cmake -G Ninja -B build -DCLOUD_SAVE_GOOGLE_CLIENT_ID=1234-abc.apps.googleusercontent.com -DCLOUD_SAVE_GOOGLE_CLIENT_SECRET=GOCSPX-abc -DCLOUD_SAVE_ONEDRIVE_CLIENT_ID=00000000-0000-0000-0000-000000000000
 ```
 
-A client ID entered in the game or in `cloudsave.ini` takes precedence over the built-in one, and a sign-in made with the one does not count with the other.
+The dialog then shows no client fields for that service: players only press **Sign In**. A client ID in `cloudsave.ini` still takes precedence over the built-in one, and a sign-in made with the one does not count with the other.
 
 ### The settings file
 
