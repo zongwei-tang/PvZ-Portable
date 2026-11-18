@@ -456,3 +456,6 @@ build-*/
 
 # Game recordings
 *.dmo
+
+# OAuth clients that macos/build-app.sh builds into the game
+macos/cloud-clients.cmake

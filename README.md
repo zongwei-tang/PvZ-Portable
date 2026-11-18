@@ -208,6 +208,24 @@ cmake -G Ninja -B build
 cmake --build build
 ```
 
+### Mac app
+
+On macOS, one command builds the game as an app and installs it to `/Applications/PlantsVsZombies.app`, replacing the one there. It installs missing [Homebrew](https://brew.sh/) packages, bundles the libraries so the app runs without Homebrew, and takes `main.pak` and `properties/` from the app it replaces:
+
+```bash
+./macos/build-app.sh
+```
+
+Without an installed app, pass the folder with `main.pak` and `properties/`: `./macos/build-app.sh --data /path/to/data`. With `--no-install` it only builds `build-mac/PlantsVsZombies.app`. Quit the game before installing. Saves are kept in the per-user data folder, so replacing the app keeps them.
+
+To build in [OAuth clients](#built-in-client-ids), put them into `macos/cloud-clients.cmake`, which is not in git:
+
+```cmake
+set(CLOUD_SAVE_GOOGLE_CLIENT_ID "1234-abc.apps.googleusercontent.com" CACHE STRING "" FORCE)
+set(CLOUD_SAVE_GOOGLE_CLIENT_SECRET "GOCSPX-abc" CACHE STRING "" FORCE)
+set(CLOUD_SAVE_ONEDRIVE_CLIENT_ID "00000000-0000-0000-0000-000000000000" CACHE STRING "" FORCE)
+```
+
 ### Performance Optimization
 
 It is recommended to use the **Release** build type for the best performance, as it usually implies compiler optimizations:
