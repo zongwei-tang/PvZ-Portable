@@ -135,8 +135,12 @@ endif()
 option(CLOUD_SAVE "Enable cloud save to WebDAV, Google Drive and OneDrive (needs libcurl)" ${CLOUD_SAVE_DEFAULT})
 # Google Drive and OneDrive sign in through an OAuth app registered by whoever ships the build. Without these, players
 # enter the client of their own app in the cloud save settings (see the README).
-set(CLOUD_SAVE_GOOGLE_CLIENT_ID "" CACHE STRING "Google OAuth client ID (type: Desktop app) built in for Google Drive")
-set(CLOUD_SAVE_GOOGLE_CLIENT_SECRET "" CACHE STRING "Client secret that goes with CLOUD_SAVE_GOOGLE_CLIENT_ID")
+# The Google client of this project is built in by default. For a Desktop app client Google does not treat the secret as
+# confidential: it ships inside every build anyway. Pass empty values to build without it.
+set(CLOUD_SAVE_GOOGLE_CLIENT_ID "885661944583-3vt1ujgog9hl0u5bd007t9cfvdr315ga.apps.googleusercontent.com" CACHE STRING
+	"Google OAuth client ID (type: Desktop app) built in for Google Drive")
+set(CLOUD_SAVE_GOOGLE_CLIENT_SECRET "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" CACHE STRING
+	"Client secret that goes with CLOUD_SAVE_GOOGLE_CLIENT_ID")
 set(CLOUD_SAVE_ONEDRIVE_CLIENT_ID "" CACHE STRING
 	"Microsoft app registration ID (platform: Mobile and desktop applications, redirect URI http://localhost) built in for OneDrive")
 option(CLOUD_SAVE_TESTS "Build cloudsync-test, offline tests of the cloud save protocol" OFF)

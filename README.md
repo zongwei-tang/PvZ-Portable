@@ -218,7 +218,7 @@ On macOS, one command builds the game as an app and installs it to `/Application
 
 Without an installed app, pass the folder with `main.pak` and `properties/`: `./macos/build-app.sh --data /path/to/data`. With `--no-install` it only builds `build-mac/PlantsVsZombies.app`. Quit the game before installing. Saves are kept in the per-user data folder, so replacing the app keeps them.
 
-To build in [OAuth clients](#built-in-client-ids), put them into `macos/cloud-clients.cmake`, which is not in git:
+The Google client of this project is built in by default. To build in other [OAuth clients](#built-in-client-ids), put them into `macos/cloud-clients.cmake`, which is not in git:
 
 ```cmake
 set(CLOUD_SAVE_GOOGLE_CLIENT_ID "1234-abc.apps.googleusercontent.com" CACHE STRING "" FORCE)
@@ -250,7 +250,7 @@ You can customize the game features by adding options to the first `cmake` comma
 | `DO_FIX_BUGS` | `OFF` | Apply community fixes for "bugs" of official 1.2.0.1073 GOTY Edition.[^1] However, these "bugs" are usually **considered "features"** by many players. |
 | `CONSOLE` | `OFF`<br>(`ON` if `CMAKE_BUILD_TYPE` is `Debug`) | Show a console window (Windows only). |
 | `CLOUD_SAVE` | `ON`<br>(`OFF` on WebAssembly, Switch, Android, iOS and with `BUILD_STATIC`) | Build the [cloud save](#cloud-save) to WebDAV, Google Drive and OneDrive. Needs `libcurl`; when it is not found the game builds without cloud save. |
-| `CLOUD_SAVE_GOOGLE_CLIENT_ID`<br>`CLOUD_SAVE_GOOGLE_CLIENT_SECRET` | empty | ID and secret of a Google OAuth client of the type **Desktop app**, built into the game so players can sign in to Google Drive without [their own client](#google-cloud-client). Give both or neither. |
+| `CLOUD_SAVE_GOOGLE_CLIENT_ID`<br>`CLOUD_SAVE_GOOGLE_CLIENT_SECRET` | the client of this project | ID and secret of a Google OAuth client of the type **Desktop app**, built into the game so players can sign in to Google Drive without [their own client](#google-cloud-client). Give both or neither. |
 | `CLOUD_SAVE_ONEDRIVE_CLIENT_ID` | empty | ID of a Microsoft app registration with the redirect URI `http://localhost` under **Mobile and desktop applications**, built into the game so players can sign in to OneDrive without [their own registration](#microsoft-app-registration). |
 | `CLOUD_SAVE_TESTS` | `OFF` | Also build `cloudsync-test`, offline tests of the cloud save against simulated WebDAV, Google Drive and OneDrive servers. |
 | `BUILD_STATIC` | `OFF` | Link dependencies statically (Windows with MinGW-based toolchains, glibc-based Linux). Use a vcpkg `-static` triplet for MSVC. |
