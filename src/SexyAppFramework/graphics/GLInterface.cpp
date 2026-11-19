@@ -1,10 +1,7 @@
 /*
- * Portions of this file are based on the PopCap Games Framework
- * Copyright (C) 2005-2009 PopCap Games, Inc.
- *
  * Copyright (C) 2026 Zhou Qiankang <wszqkzqk@qq.com>
  *
- * SPDX-License-Identifier: LGPL-3.0-or-later AND LicenseRef-PopCap
+ * SPDX-License-Identifier: LGPL-3.0-or-later
  *
  * This file is part of PvZ-Portable.
  *
@@ -25,7 +22,7 @@
 #define GLAD_GLES2_IMPLEMENTATION
 #include "graphics/GLPlatform.h"
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 
 #include "graphics/GLInterface.h"
 #include "graphics/GLImage.h"
@@ -81,51 +78,120 @@ static bool gLinearFilter = false;
 
 static std::vector<GLVertex> gVertices;
 static int gNumVertices;
+static int gPrimitiveStart;
 static GLenum gVertexMode;
 static GLuint gProgram;
 static GLuint gVbo;
 static GLint gUfViewProjMtx, gUfTexture, gUfUseTexture, gUfUvBounds, gUfClampUvEnabled, gUfMixedBlend;
 
+struct GfxDrawState
+{
+	GLuint texture = 0;
+	GLenum blendSrc = GL_SRC_ALPHA;
+	GLenum blendDst = GL_ONE_MINUS_SRC_ALPHA;
+	GLint filter = GL_NEAREST;
+	GLint useTexture = 0;
+	GLint clampUv = 1;
+	GLint mixedBlend = 0;
+	float uvBounds[4] = {};
+};
+
+struct GfxDrawCommand
+{
+	GLenum mode;
+	GLint first;
+	GLsizei count;
+	GfxDrawState state;
+};
+
+static GfxDrawState gDrawState, gAppliedState;
+static bool gAppliedStateValid = false;
+static bool gAppliedTextureValid = false;
+static std::vector<GfxDrawCommand> gDrawCommands;
+
 static void GfxBegin(GLenum vertexMode)
 {
 	if (gVertexMode != (GLenum)-1) return;
 	gVertexMode = vertexMode;
+	gPrimitiveStart = gNumVertices;
 }
-
-static GLenum gBlendSrc = 0;
-static GLenum gBlendDst = 0;
 
 static void SetBlendFunc(GLenum theSrc, GLenum theDst)
 {
-	if (gBlendSrc == theSrc && gBlendDst == theDst) return;
-	glBlendFunc(theSrc, theDst);
-	gBlendSrc = theSrc;
-	gBlendDst = theDst;
+	gDrawState.blendSrc = theSrc;
+	gDrawState.blendDst = theDst;
 }
-
-static int gMixedBlend = -1;
 
 static void SetMixedBlendMode(bool theEnabled)
 {
-	int anEnabled = theEnabled ? 1 : 0;
-	if (gMixedBlend == anEnabled) return;
-	glUniform1i(gUfMixedBlend, anEnabled);
-	gMixedBlend = anEnabled;
+	gDrawState.mixedBlend = theEnabled ? 1 : 0;
+}
+
+static void GfxApplyState(const GfxDrawState& state)
+{
+	if (!gAppliedStateValid || gAppliedState.blendSrc != state.blendSrc || gAppliedState.blendDst != state.blendDst)
+		glBlendFunc(state.blendSrc, state.blendDst);
+	if (!gAppliedStateValid || gAppliedState.useTexture != state.useTexture)
+		glUniform1i(gUfUseTexture, state.useTexture);
+	if (!gAppliedStateValid || gAppliedState.mixedBlend != state.mixedBlend)
+		glUniform1i(gUfMixedBlend, state.mixedBlend);
+
+	if (state.useTexture)
+	{
+		bool aTextureChanged = !gAppliedTextureValid || gAppliedState.texture != state.texture;
+		if (aTextureChanged)
+			glBindTexture(GL_TEXTURE_2D, state.texture);
+		if (aTextureChanged || gAppliedState.filter != state.filter)
+		{
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, state.filter);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, state.filter);
+		}
+		if (!gAppliedTextureValid || gAppliedState.clampUv != state.clampUv)
+			glUniform1i(gUfClampUvEnabled, state.clampUv);
+		if (!gAppliedTextureValid || memcmp(gAppliedState.uvBounds, state.uvBounds, sizeof(state.uvBounds)) != 0)
+			glUniform4fv(gUfUvBounds, 1, state.uvBounds);
+
+		gAppliedState.texture = state.texture;
+		gAppliedState.filter = state.filter;
+		gAppliedState.clampUv = state.clampUv;
+		memcpy(gAppliedState.uvBounds, state.uvBounds, sizeof(state.uvBounds));
+		gAppliedTextureValid = true;
+	}
+	gAppliedState.blendSrc = state.blendSrc;
+	gAppliedState.blendDst = state.blendDst;
+	gAppliedState.useTexture = state.useTexture;
+	gAppliedState.mixedBlend = state.mixedBlend;
+	gAppliedStateValid = true;
+}
+
+static void GfxSubmit()
+{
+	if (gDrawCommands.empty()) return;
+
+	glBindBuffer(GL_ARRAY_BUFFER, gVbo);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(GLVertex) * gNumVertices, gVertices.data(), GL_DYNAMIC_DRAW);
+	glActiveTexture(GL_TEXTURE0);
+	for (const auto& command : gDrawCommands)
+	{
+		GfxApplyState(command.state);
+		glDrawArrays(command.mode, command.first, command.count);
+	}
+	gDrawCommands.clear();
+	gNumVertices = 0;
 }
 
 static void GfxEnd()
 {
 	if (gVertexMode == (GLenum)-1) return;
-
-	if (gNumVertices > 0)
-	{
-		glBindBuffer(GL_ARRAY_BUFFER, gVbo);
-		glBufferData(GL_ARRAY_BUFFER, sizeof(GLVertex) * gNumVertices, gVertices.data(), GL_DYNAMIC_DRAW);
-		glDrawArrays(gVertexMode, 0, gNumVertices);
-	}
-
+	if (gNumVertices > gPrimitiveStart)
+		gDrawCommands.push_back({gVertexMode, gPrimitiveStart, gNumVertices - gPrimitiveStart, gDrawState});
 	gVertexMode = (GLenum)-1;
-	gNumVertices = 0;
+}
+
+static void GfxFlush()
+{
+	GfxEnd();
+	GfxSubmit();
 }
 
 static void GfxEnsureSpace(int theAdditional)
@@ -133,6 +199,7 @@ static void GfxEnsureSpace(int theAdditional)
 	if (gVertexMode == (GLenum)-1 || gNumVertices + theAdditional <= MAX_VERTICES) return;
 	GLenum oldMode = gVertexMode;
 	GfxEnd();
+	GfxSubmit();
 	GfxBegin(oldMode);
 }
 
@@ -579,24 +646,10 @@ TextureData::~TextureData()
 	ReleaseTextures();
 }
 
-struct GfxTextureCache
-{
-	GLuint tex = 0;
-	int filter = 0;
-	int clampUv = -1;
-	float uvBounds[4] = {};
-	bool valid = false;
-};
-static GfxTextureCache gTextureCache;
-
-static void GfxInvalidateTextureCache()
-{
-	gTextureCache.valid = false;
-}
-
 void TextureData::ReleaseTextures()
 {
-	GfxInvalidateTextureCache();
+	GfxFlush();
+	gAppliedTextureValid = false;
 	for (auto &piece : mTextures)
 		glDeleteTextures(1, &piece.mTexture);
 	mTextures.clear();
@@ -648,6 +701,7 @@ void TextureData::CreateTextureDimensions(MemoryImage *theImage)
 
 void TextureData::CreateTextures(MemoryImage *theImage)
 {
+	GfxFlush();
 	theImage->DeleteSWBuffers();
 
 	PixelFormat aFormat = PixelFormat_A8R8G8B8;
@@ -702,7 +756,7 @@ void TextureData::CreateTextures(MemoryImage *theImage)
 	mHeight = theImage->mHeight;
 	mBitsChangedCount = theImage->mBitsChangedCount;
 	mPixelFormat = aFormat;
-	GfxInvalidateTextureCache();
+	gAppliedTextureValid = false;
 }
 
 void TextureData::CheckCreateTextures(MemoryImage *theImage)
@@ -777,26 +831,10 @@ static constexpr float kDefaultUvBounds[4] = { 0.f, 0.f, 1.f, 1.f };
 
 static void GfxBindTexture(GLuint tex, const float *uvBounds = kDefaultUvBounds, bool clampUv = true)
 {
-	int f = gLinearFilter ? GL_LINEAR : GL_NEAREST;
-	int c = clampUv ? 1 : 0;
-	if (gTextureCache.valid
-		&& gTextureCache.tex == tex
-		&& gTextureCache.filter == f
-		&& gTextureCache.clampUv == c
-		&& memcmp(gTextureCache.uvBounds, uvBounds, sizeof(gTextureCache.uvBounds)) == 0)
-		return;
-
-	glBindTexture(GL_TEXTURE_2D, tex);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, f);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, f);
-	glUniform1i(gUfClampUvEnabled, c);
-	glUniform4fv(gUfUvBounds, 1, uvBounds);
-
-	gTextureCache.tex = tex;
-	gTextureCache.filter = f;
-	gTextureCache.clampUv = c;
-	memcpy(gTextureCache.uvBounds, uvBounds, sizeof(gTextureCache.uvBounds));
-	gTextureCache.valid = true;
+	gDrawState.texture = tex;
+	gDrawState.filter = gLinearFilter ? GL_LINEAR : GL_NEAREST;
+	gDrawState.clampUv = clampUv ? 1 : 0;
+	memcpy(gDrawState.uvBounds, uvBounds, sizeof(gDrawState.uvBounds));
 }
 
 void TextureData::Blt(float theX, float theY, const Rect& theSrcRect, const Color& theColor)
@@ -809,7 +847,7 @@ void TextureData::Blt(float theX, float theY, const Rect& theSrcRect, const Colo
 
 	uint32_t aColor = theColor.ToGLColor();
 	glActiveTexture(GL_TEXTURE0);
-	glUniform1i(gUfUseTexture, 1);
+	gDrawState.useTexture = 1;
 
 	int srcX, srcY;
 	float dstX, dstY;
@@ -958,7 +996,7 @@ void TextureData::BltTransformed(const SexyMatrix3 &theTrans, const Rect& theSrc
 
 	uint32_t aColor = theColor.ToGLColor();
 	glActiveTexture(GL_TEXTURE0);
-	glUniform1i(gUfUseTexture, 1);
+	gDrawState.useTexture = 1;
 
 	int srcX, srcY;
 	float dstX, dstY;
@@ -1026,7 +1064,7 @@ void TextureData::BltTransformed(const SexyMatrix3 &theTrans, const Rect& theSrc
 void TextureData::BltTriangles(const TriVertex theVertices[][3], int theNumTriangles,
 							   unsigned int theColor, float tx, float ty, bool clampUv, const uint8_t* theDrawModes)
 {
-	glUniform1i(gUfUseTexture, 1);
+	gDrawState.useTexture = 1;
 	if (mMaxTotalU <= 1.0 && mMaxTotalV <= 1.0)
 	{
 		// Single-texture fast path
@@ -1130,6 +1168,9 @@ GLInterface::GLInterface(SexyAppBase* theApp)
 
 	gVertexMode  = (GLenum)-1;
 	gNumVertices = 0;
+	gDrawCommands.clear();
+	gAppliedStateValid = false;
+	gAppliedTextureValid = false;
 	gVertices.resize(MAX_VERTICES);
 }
 
@@ -1179,14 +1220,24 @@ GLImage* GLInterface::GetScreenImage() { return mScreenImage.get(); }
 
 void GLInterface::UpdateViewport()
 {
+	GfxFlush();
 	int vx = 0, vy = 0, vw, vh;
 
 #ifdef __SWITCH__
 	int width = 1280, height = 720;
 #else
 	int width, height;
-	SDL_GL_GetDrawableSize((SDL_Window*)mApp->mWindow, &width, &height);
+	SDL_GetWindowSizeInPixels(mApp->mWindow.get(), &width, &height);
 #endif
+	if (width <= 0 || height <= 0)
+		return;
+
+	int windowWidth = width, windowHeight = height;
+#ifndef __SWITCH__
+	SDL_GetWindowSize(mApp->mWindow.get(), &windowWidth, &windowHeight);
+#endif
+	if (windowWidth <= 0 || windowHeight <= 0)
+		return;
 
 	vw = width; vh = height;
 
@@ -1203,38 +1254,38 @@ void GLInterface::UpdateViewport()
 	}
 
 	glViewport(vx, vy, vw, vh);
-	mPresentationRect = Rect(vx, vy, vw, vh);
+	mPresentationRect = Rect(
+		windowWidth * vx / width,
+		windowHeight * vy / height,
+		windowWidth * vw / width,
+		windowHeight * vh / height);
 }
 
 int GLInterface::Init(bool IsWindowed)
 {
-	static bool inited = false;
-	if (!inited)
-	{
-		inited = true;
-		PlatformGLInit();
+	GfxFlush();
+	PlatformGLInit();
 
-		gProgram = shaderLoad(SHADER_CODE);
-		if (gProgram == 0)
-			return 0;
-		gUfViewProjMtx = glGetUniformLocation(gProgram, "u_viewProj");
-		gUfTexture     = glGetUniformLocation(gProgram, "u_texture");
-		gUfUseTexture  = glGetUniformLocation(gProgram, "u_useTexture");
-		gUfUvBounds    = glGetUniformLocation(gProgram, "u_uvBounds");
-		gUfClampUvEnabled = glGetUniformLocation(gProgram, "u_clampUvEnabled");
-		gUfMixedBlend  = glGetUniformLocation(gProgram, "u_mixedBlend");
+	gProgram = shaderLoad(SHADER_CODE);
+	if (gProgram == 0)
+		return 0;
+	gUfViewProjMtx = glGetUniformLocation(gProgram, "u_viewProj");
+	gUfTexture     = glGetUniformLocation(gProgram, "u_texture");
+	gUfUseTexture  = glGetUniformLocation(gProgram, "u_useTexture");
+	gUfUvBounds    = glGetUniformLocation(gProgram, "u_uvBounds");
+	gUfClampUvEnabled = glGetUniformLocation(gProgram, "u_clampUvEnabled");
+	gUfMixedBlend  = glGetUniformLocation(gProgram, "u_mixedBlend");
 
-		glGenBuffers(1, &gVbo);
-		glBindBuffer(GL_ARRAY_BUFFER, gVbo);
-		glBufferData(GL_ARRAY_BUFFER, sizeof(GLVertex) * MAX_VERTICES, nullptr, GL_DYNAMIC_DRAW);
+	glGenBuffers(1, &gVbo);
+	glBindBuffer(GL_ARRAY_BUFFER, gVbo);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(GLVertex) * MAX_VERTICES, nullptr, GL_DYNAMIC_DRAW);
 
-		glVertexAttribPointer(0, 3, GL_FLOAT,         GL_FALSE, sizeof(GLVertex), (const void*)0);
-		glEnableVertexAttribArray(0);
-		glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE,  GL_TRUE,  sizeof(GLVertex), (const void*)(sizeof(float)*3));
-		glEnableVertexAttribArray(1);
-		glVertexAttribPointer(2, 2, GL_FLOAT,         GL_FALSE, sizeof(GLVertex), (const void*)(sizeof(float)*3 + sizeof(uint32_t)));
-		glEnableVertexAttribArray(2);
-	}
+	glVertexAttribPointer(0, 3, GL_FLOAT,         GL_FALSE, sizeof(GLVertex), (const void*)0);
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE,  GL_TRUE,  sizeof(GLVertex), (const void*)(sizeof(float)*3));
+	glEnableVertexAttribArray(1);
+	glVertexAttribPointer(2, 2, GL_FLOAT,         GL_FALSE, sizeof(GLVertex), (const void*)(sizeof(float)*3 + sizeof(uint32_t)));
+	glEnableVertexAttribArray(2);
 
 	int aMaxSize;
 	glGetIntegerv(GL_MAX_TEXTURE_SIZE, &aMaxSize);
@@ -1258,7 +1309,9 @@ int GLInterface::Init(bool IsWindowed)
 	glUniform1i(gUfTexture, 0);
 	glUniform1i(gUfClampUvEnabled, 1);
 	glUniform1i(gUfMixedBlend, 0);
-	gMixedBlend = 0;
+	gDrawState = {};
+	gAppliedStateValid = false;
+	gAppliedTextureValid = false;
 
 	glEnable(GL_BLEND);
 	glDisable(GL_DITHER);
@@ -1307,11 +1360,11 @@ bool GLInterface::PreDraw()
 
 void GLInterface::Flush()
 {
-	gNumVertices = 0;
+	GfxFlush();
 #ifdef __SWITCH__
 	eglSwapBuffers(mApp->mWindow, mApp->mSurface);
 #else
-	SDL_GL_SwapWindow((SDL_Window*)mApp->mWindow);
+	SDL_GL_SwapWindow(mApp->mWindow.get());
 #endif
 #ifndef __EMSCRIPTEN__
 	// Clear back buffer after swap (content undefined)
@@ -1336,7 +1389,8 @@ bool GLInterface::CreateImageTexture(MemoryImage *theImage)
 
 bool GLInterface::RecoverBits(MemoryImage* theImage)
 {
-	GfxInvalidateTextureCache();
+	GfxFlush();
+	gAppliedTextureValid = false;
 	if (!theImage->mRenderData) return false;
 
 	TextureData* data = theImage->mRenderData;
@@ -1521,7 +1575,7 @@ void GLInterface::DrawLine(double x1, double y1, double x2, double y2,
 		fx1 = p1.x; fy1 = p1.y; fx2 = p2.x; fy2 = p2.y;
 	}
 
-	glUniform1i(gUfUseTexture, 0);
+	gDrawState.useTexture = 0;
 	uint32_t c = theColor.ToGLColor();
 	GLVertex v[3] = {
 		{ fx1, fy1, 0, c, 0, 0 },
@@ -1560,7 +1614,7 @@ void GLInterface::FillRect(const Rect& theRect, const Color& theColor, int theDr
 		}
 	}
 
-	glUniform1i(gUfUseTexture, 0);
+	gDrawState.useTexture = 0;
 	GfxBegin(GL_TRIANGLE_STRIP);
 	GfxAddVertices(v, 4);
 	GfxEnd();
@@ -1573,7 +1627,7 @@ void GLInterface::DrawTriangle(const TriVertex &p1, const TriVertex &p2, const T
 	SetDrawMode(theDrawMode);
 
 	uint32_t c = theColor.ToGLColor();
-	glUniform1i(gUfUseTexture, 0);
+	gDrawState.useTexture = 0;
 
 	GLVertex v[3] = {
 		{ p1.x, p1.y, 0, GetColorFromTriVertex(p1, c), 0, 0 },
@@ -1655,7 +1709,7 @@ void GLInterface::FillPoly(const Point theVertices[], int theNumVertices,
 	SetDrawMode(theDrawMode);
 
 	uint32_t c = theColor.ToGLColor();
-	glUniform1i(gUfUseTexture, 0);
+	gDrawState.useTexture = 0;
 
 	VertexList vl;
 	for (int i = 0; i < theNumVertices; i++)

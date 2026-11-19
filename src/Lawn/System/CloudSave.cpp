@@ -22,7 +22,7 @@
 #include <format>
 #include <mutex>
 #include <thread>
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #ifndef _WIN32
 #include <unistd.h>
 #endif

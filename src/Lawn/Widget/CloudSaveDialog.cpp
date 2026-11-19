@@ -18,7 +18,7 @@
 #include <algorithm>
 #include <format>
 #include <initializer_list>
-#include <SDL.h>
+#include <SDL3/SDL.h>
 
 namespace
 {
@@ -283,7 +283,7 @@ std::string CloudSaveDialog::IdleStatus() const
 // The address also goes to the clipboard: the browser may not open, or open behind the game or in another profile.
 void CloudSaveDialog::OpenSignInPage()
 {
-	mPageCopied = SDL_SetClipboardText(mSignIn.mPage.c_str()) == 0;
+	mPageCopied = SDL_SetClipboardText(mSignIn.mPage.c_str());
 	if (mSignIn.mPage.starts_with("https://"))
 		SDL_OpenURL(mSignIn.mPage.c_str());
 }
