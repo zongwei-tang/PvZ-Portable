@@ -1,0 +1,110 @@
+# The Mac app of this fork, released for download and for the app's own updater.
+#
+# Pushing a tag v<version> (e.g. v0.2.7.1) builds PlantsVsZombies.app with macos/build-app.sh, signs the zip for
+# Sparkle with the SPARKLE_PRIVATE_KEY secret and puts the zip and appcast.xml into the release of that tag. Installed
+# apps read releases/latest/download/appcast.xml, so they offer the update of the latest release. Run by hand, the
+# workflow only builds the app and keeps it as an artifact of the run.
+name: Mac app release
+
+on:
+  push:
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mac-app:
+    name: Build the Mac app
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      ZIP: PlantsVsZombies-mac.zip
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0  # the build number is the number of commits
+
+    - name: Build PlantsVsZombies.app
+      env:
+        APP_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+      run: ./macos/build-app.sh --no-data --no-install
+
+    - name: Pack the app
+      run: |
+        mkdir -p dist
+        # ditto keeps the symbolic links and signatures of Sparkle.framework, which zip would break
+        ditto -c -k --sequesterRsrc --keepParent build-mac/PlantsVsZombies.app "dist/$ZIP"
+
+    - name: Sign the update and write appcast.xml
+      if: github.ref_type == 'tag'
+      env:
+        SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+      run: |
+        set -euo pipefail
+        if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
+          echo "::error::The SPARKLE_PRIVATE_KEY secret is not set, so the update cannot be signed"
+          exit 1
+        fi
+        KEY="$RUNNER_TEMP/sparkle-key.txt"
+        printf '%s' "$SPARKLE_PRIVATE_KEY" > "$KEY"
+        SPARKLE="$(ls -d build-mac/sparkle-*/ | head -n 1)"
+        SIGNATURE="$("$SPARKLE/bin/sign_update" --ed-key-file "$KEY" -p "dist/$ZIP")"
+        rm -f "$KEY"
+
+        # check the signature against the public key the app carries, so a key that does not match fails here and not
+        # in every installed app
+        brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+        OPENSSL="$(brew --prefix openssl@3)/bin/openssl"
+        { printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00'; tr -d ' \n' < macos/sparkle-public-key.txt | base64 -d; } \
+          > "$RUNNER_TEMP/public.der"
+        printf '%s' "$SIGNATURE" | base64 -d > "$RUNNER_TEMP/zip.sig"
+        "$OPENSSL" pkeyutl -verify -pubin -keyform DER -inkey "$RUNNER_TEMP/public.der" -rawin \
+          -in "dist/$ZIP" -sigfile "$RUNNER_TEMP/zip.sig"
+
+        PLIST=build-mac/PlantsVsZombies.app/Contents/Info.plist
+        VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
+        BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")"
+        LENGTH="$(stat -f %z "dist/$ZIP")"
+        DATE="$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')"
+        URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$ZIP"
+        cat > dist/appcast.xml <<EOF
+        <?xml version="1.0" encoding="utf-8"?>
+        <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+          <channel>
+            <title>Plants vs. Zombies</title>
+            <item>
+              <title>$GITHUB_REF_NAME</title>
+              <pubDate>$DATE</pubDate>
+              <sparkle:version>$BUILD_NUMBER</sparkle:version>
+              <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+              <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
+              <enclosure url="$URL" length="$LENGTH" type="application/octet-stream" sparkle:edSignature="$SIGNATURE"/>
+            </item>
+          </channel>
+        </rss>
+        EOF
+        xmllint --noout dist/appcast.xml
+        cat dist/appcast.xml
+
+    - name: Keep the app with the run
+      uses: actions/upload-artifact@v7
+      with:
+        name: PlantsVsZombies-mac
+        path: dist/
+
+    - name: Release
+      if: github.ref_type == 'tag'
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          dist/${{ env.ZIP }}
+          dist/appcast.xml
+        generate_release_notes: true
+        make_latest: true

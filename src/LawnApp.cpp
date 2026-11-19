@@ -37,6 +37,7 @@
 #include "PvzpLib/Trail.h"
 #include "Lawn/System/Music.h"
 #include "Lawn/System/CloudSave.h"
+#include "Lawn/System/MacUpdater.h"
 #include "Lawn/System/SaveGame.h"
 #include "PvzpLib/PvzpDebug.h"
 #include "PvzpLib/PvzpFoley.h"
@@ -1244,6 +1245,7 @@ void LawnApp::Init()
 	PerfTimer mTimer;
 	mTimer.Start();
 
+	MacUpdater::Start();
 	CloudSave::Init();
 	mProfileMgr->Load();
 
@@ -1338,6 +1340,11 @@ void LawnApp::EnsureTrainerPanel()
 	mTrainerPanel = std::make_unique<TrainerPanel>(this);
 	mWidgetManager->AddWidget(mTrainerPanel.get());
 	mTrainerPanel->UpdateClosedState();
+}
+
+void LawnApp::CheckForUpdates()
+{
+	MacUpdater::CheckNow();
 }
 
 bool LawnApp::TrainerHotkey()

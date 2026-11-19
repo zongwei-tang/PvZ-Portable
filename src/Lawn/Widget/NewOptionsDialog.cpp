@@ -24,6 +24,7 @@
 #include "../Cutscene.h"
 #include "AlmanacDialog.h"
 #include "CloudSaveDialog.h"
+#include "../System/MacUpdater.h"
 #include "../LawnCommon.h"
 #include "../../LawnApp.h"
 #include "../System/Music.h"
@@ -52,6 +53,8 @@ NewOptionsDialog::NewOptionsDialog(LawnApp* theApp, bool theFromGameSelector) :
 #else
 	mCloudSaveButton->SetVisible(false);
 #endif
+	mUpdateButton = MakeButton(NewOptionsDialog::NewOptionsDialog_Update, this, "Check Updates");
+	mUpdateButton->SetVisible(theFromGameSelector && MacUpdater::Available());
 
 	mBackToGameButton = MakeNewButton(
 		Dialog::ID_OK,
@@ -131,6 +134,7 @@ void NewOptionsDialog::AddedToManager(Sexy::WidgetManager* theWidgetManager)
 	AddWidget(mAlmanacButton.get());
 	AddWidget(mRestartButton.get());
 	AddWidget(mCloudSaveButton.get());
+	AddWidget(mUpdateButton.get());
 	AddWidget(mBackToMainButton.get());
 	AddWidget(mMusicVolumeSlider.get());
 	AddWidget(mSfxVolumeSlider.get());
@@ -151,6 +155,7 @@ void NewOptionsDialog::RemovedFromManager(Sexy::WidgetManager* theWidgetManager)
 	RemoveWidget(mBackToGameButton.get());
 	RemoveWidget(mRestartButton.get());
 	RemoveWidget(mCloudSaveButton.get());
+	RemoveWidget(mUpdateButton.get());
 }
 
 void NewOptionsDialog::Resize(int theX, int theY, int theWidth, int theHeight)
@@ -163,6 +168,7 @@ void NewOptionsDialog::Resize(int theX, int theY, int theWidth, int theHeight)
 	mAlmanacButton->Resize(107, 241, 209, 46);
 	mRestartButton->Resize(mAlmanacButton->mX, mAlmanacButton->mY + 43, 209, 46);
 	mCloudSaveButton->Resize(mRestartButton->mX, mRestartButton->mY, 209, 46);
+	mUpdateButton->Resize(mAlmanacButton->mX, mAlmanacButton->mY, 209, 46);
 	mBackToMainButton->Resize(mRestartButton->mX, mRestartButton->mY + 43, 209, 46);
 	mBackToGameButton->Resize(30, 381, mBackToGameButton->mWidth, mBackToGameButton->mHeight);
 

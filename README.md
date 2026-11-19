@@ -341,13 +341,21 @@ cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="-march=nativ
 
 ### Mac app
 
-On macOS, one command builds the game as an app and installs it to `/Applications/PlantsVsZombies.app`, replacing the one there. It installs missing [Homebrew](https://brew.sh/) packages, bundles the libraries so the app runs without Homebrew, and takes `main.pak` and `properties/` from the app it replaces:
+On macOS, one command builds the game as an app and installs it to `/Applications/PlantsVsZombies.app`, replacing the one there. It installs missing [Homebrew](https://brew.sh/) packages and bundles the libraries, so the app runs without Homebrew:
 
 ```bash
 ./macos/build-app.sh
 ```
 
-Without an installed app, pass the folder with `main.pak` and `properties/`: `./macos/build-app.sh --data /path/to/data`. With `--no-install` it only builds `build-mac/PlantsVsZombies.app`. Quit the game before installing. Saves are kept in the per-user data folder, so replacing the app keeps them.
+The app carries no game data, so that an update can replace it whole: `main.pak` and `properties/` live in the per-user data folder, next to the saves (the script prints where). The script copies them there from the app it replaces (also from apps made by its earlier versions, which carried them inside); without them, pass the folder that holds them: `./macos/build-app.sh --data /path/to/data`. With `--no-install` it only builds `build-mac/PlantsVsZombies.app`. Quit the game before installing.
+
+#### Releases and updates
+
+Pushing a tag `v<version>` (e.g. `v0.2.7.1`) runs [`.github/workflows/mac-release.yml`](.github/workflows/mac-release.yml): it builds the app, signs it for updates and puts `PlantsVsZombies-mac.zip` and `appcast.xml` into the release of the tag. The release needs the repository secret `SPARKLE_PRIVATE_KEY`, the private key that goes with `macos/sparkle-public-key.txt`.
+
+The app updates itself through [Sparkle](https://sparkle-project.org/): about once a day it looks at the latest release of the repository of the remote `origin`, and when that has a newer build it shows a window with **Install Update**, which downloads the update, checks its signature, replaces the app and starts it again. **Options → Check Updates** on the main menu looks right away. The build number is the number of commits, so every release built from a later commit counts as newer.
+
+An app downloaded from a release is signed ad hoc, not by an Apple developer ID, so macOS blocks it the first time: open it with right-click → **Open**, or allow it in **System Settings → Privacy & Security**. A downloaded app has no game data yet: put `main.pak` and `properties/` into the per-user data folder; the game names that folder when it cannot find them.
 
 The Google client of this project is built in by default. To build in other [OAuth clients](#built-in-client-ids), put them into `macos/cloud-clients.cmake`, which is not in git:
 

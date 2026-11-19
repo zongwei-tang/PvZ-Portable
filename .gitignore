@@ -459,3 +459,6 @@ build-*/
 
 # OAuth clients that macos/build-app.sh builds into the game
 macos/cloud-clients.cmake
+
+# Private key that signs the Mac app updates (it belongs in the SPARKLE_PRIVATE_KEY secret, never in git)
+macos/sparkle-private-key.txt

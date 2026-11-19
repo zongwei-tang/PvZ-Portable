@@ -192,6 +192,20 @@ SexyAppBase::SexyAppBase()
 #else
 	const char* aBasePath = SDL_GetBasePath();
 	mResourceDir = aBasePath != nullptr ? aBasePath : "";
+#if defined(__APPLE__)
+	// The Mac app carries no game data, so that an update can replace the whole app: main.pak and properties/ then go
+	// into the per-user data folder, next to the saves.
+	std::error_code aBaseError;
+	if (!std::filesystem::is_regular_file(std::filesystem::path(mResourceDir) / "main.pak", aBaseError))
+	{
+		char* aPrefPath = SDL_GetPrefPath("io.github.wszqkzqk", "PvZPortable");
+		if (aPrefPath != nullptr)
+		{
+			mResourceDir = aPrefPath;
+			SDL_free(aPrefPath);
+		}
+	}
+#endif
 #endif
 
 	mNoDefer = false;

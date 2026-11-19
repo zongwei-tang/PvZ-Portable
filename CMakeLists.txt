@@ -247,6 +247,20 @@ if(CLOUD_SAVE AND CURL_FOUND)
 	endif()
 endif()
 
+# The Mac app updates itself through Sparkle, which the app made by macos/build-app.sh carries and the game loads at run
+# time (see src/Lawn/System/MacUpdater.h), so building needs no Sparkle.
+if(APPLE AND NOT IOS)
+	option(MAC_UPDATER "Let the Mac app update itself through Sparkle" ON)
+else()
+	set(MAC_UPDATER OFF)
+endif()
+if(MAC_UPDATER)
+	enable_language(OBJCXX)
+	target_sources(pvz-portable PRIVATE src/Lawn/System/MacUpdater.mm)
+	target_compile_definitions(pvz-portable PRIVATE PVZP_MAC_UPDATER)
+	target_link_libraries(pvz-portable PRIVATE "-framework Foundation")
+endif()
+
 if(EMSCRIPTEN)
 	set_property(TARGET pvz-portable APPEND PROPERTY LINK_DEPENDS
 		"${CMAKE_CURRENT_SOURCE_DIR}/wasm/shell.html"

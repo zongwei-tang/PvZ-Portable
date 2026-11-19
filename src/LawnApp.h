@@ -162,7 +162,7 @@ public:
 	void							HandleCmdLineParam(std::string_view theParamName, std::string_view theParamValue) override;
 	void							ConfirmQuit();
 	void							ConfirmCheckForUpdates() { ; }
-	void							CheckForUpdates() { ; }
+	void							CheckForUpdates();
 	void							DoUserDialog();
 	void							FinishUserDialog(bool isYes);
 	void							DoCreateUserDialog();
