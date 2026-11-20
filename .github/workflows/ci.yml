@@ -3,7 +3,7 @@ name: CI build
 on:
   push:
     branches: [ "main" ]
-    # no tags: in this fork a tag releases the Mac app (mac-release.yml); upstream's release, AUR and Pages jobs stay off
+    tags: [ "v*" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
@@ -826,11 +826,20 @@ jobs:
       with:
         path: pages/
 
+  # The Mac app with the in-app updater (PlantsVsZombies.app, see mac-release.yml); on a tag also its appcast.xml
+  build-mac-app:
+    name: Build the Mac app
+    uses: ./.github/workflows/mac-release.yml
+    permissions:
+      contents: read
+    secrets: inherit
+
   deploy-wasm-pages:
     name: Deploy WebAssembly to GitHub Pages
     needs: ['build-archlinux', 'build-linux-static', 'build-windows-msys2-ucrt64', 'build-windows-msvc-x64', 'build-windows-msvc-x86', 'build-macos', 'build-android', 'build-ios', 'build-wasm']
-    # Auto-deploy on release tags; manual runs allowed via workflow_dispatch (main only)
-    if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    # Auto-deploy on release tags; manual runs allowed via workflow_dispatch (main only). Only the upstream repository
+    # has the Pages site, so forks skip it.
+    if: github.repository == 'wszqkzqk/PvZ-Portable' && (github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -844,7 +853,7 @@ jobs:
 
   release:
     name: Release
-    needs: ['build-archlinux', 'build-linux-static', 'build-windows-msys2-ucrt64', 'build-windows-msvc-x64', 'build-windows-msvc-x86', 'build-macos', 'build-android', 'build-ios', 'build-wasm']
+    needs: ['build-archlinux', 'build-linux-static', 'build-windows-msys2-ucrt64', 'build-windows-msvc-x64', 'build-windows-msvc-x86', 'build-macos', 'build-mac-app', 'build-android', 'build-ios', 'build-wasm']
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
@@ -876,11 +885,10 @@ jobs:
         echo "Preparing Windows MSYS2 file..."
         mv artifacts/pvz-portable-windows-msys2-ucrt64/pvz-portable.exe release_files/pvz-portable-windows-ucrt64-static.exe
 
-        echo "Preparing macOS file..."
-        cd artifacts/pvz-portable-macos
-        chmod +x pvz-portable
-        zip -r -y ../../release_files/pvz-portable-macos-aarch64.zip .
-        cd ../..
+        # This fork releases macOS as PlantsVsZombies.app (build-mac-app), not as upstream's bare binary
+        echo "Preparing the Mac app and its appcast..."
+        mv artifacts/PlantsVsZombies-mac/PlantsVsZombies-mac.zip release_files/PlantsVsZombies-mac.zip
+        mv artifacts/PlantsVsZombies-mac/appcast.xml release_files/appcast.xml
 
         echo "Preparing Android file..."
         mv artifacts/pvz-portable-android/pvz-portable-android-arm64-v8a.apk release_files/pvz-portable-android-arm64-v8a.apk
@@ -903,10 +911,12 @@ jobs:
         generate_release_notes: true
         draft: false
         prerelease: false
+        make_latest: true  # installed Mac apps read releases/latest/download/appcast.xml
 
   aur-publish:
     name: Publish to AUR
     needs: release
+    if: github.repository == 'wszqkzqk/PvZ-Portable'  # the AUR package belongs to upstream
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel

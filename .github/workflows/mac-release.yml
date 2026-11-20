@@ -1,26 +1,22 @@
-# The Mac app of this fork, released for download and for the app's own updater.
+# The Mac app of this fork (PlantsVsZombies.app), for download and for the app's own updater.
 #
-# Pushing a tag v<version> (e.g. v0.2.7.1) builds PlantsVsZombies.app with macos/build-app.sh, signs the zip for
-# Sparkle with the SPARKLE_PRIVATE_KEY secret and puts the zip and appcast.xml into the release of that tag. Installed
-# apps read releases/latest/download/appcast.xml, so they offer the update of the latest release. Run by hand, the
-# workflow only builds the app and keeps it as an artifact of the run.
-name: Mac app release
+# ci.yml calls this workflow on every run, so the app is built along with the other platforms. On a tag v<version>
+# (e.g. v0.2.7.2) it also signs the zip for Sparkle with the SPARKLE_PRIVATE_KEY secret and writes appcast.xml; the
+# release job of ci.yml then puts both into the release of that tag. Installed apps read
+# releases/latest/download/appcast.xml, so they offer the update of the latest release. Run by hand, the workflow only
+# builds the app and keeps it as an artifact of the run.
+name: Mac app
 
 on:
-  push:
-    tags: [ "v*" ]
+  workflow_call:
   workflow_dispatch:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
 
 jobs:
   mac-app:
     name: Build the Mac app
     runs-on: macos-latest
     permissions:
-      contents: write
+      contents: read
     defaults:
       run:
         shell: bash
@@ -98,13 +94,3 @@ jobs:
       with:
         name: PlantsVsZombies-mac
         path: dist/
-
-    - name: Release
-      if: github.ref_type == 'tag'
-      uses: softprops/action-gh-release@v2
-      with:
-        files: |
-          dist/${{ env.ZIP }}
-          dist/appcast.xml
-        generate_release_notes: true
-        make_latest: true

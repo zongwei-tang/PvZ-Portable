@@ -351,7 +351,7 @@ The app carries no game data, so that an update can replace it whole: `main.pak`
 
 #### Releases and updates
 
-Pushing a tag `v<version>` (e.g. `v0.2.7.1`) runs [`.github/workflows/mac-release.yml`](.github/workflows/mac-release.yml): it builds the app, signs it for updates and puts `PlantsVsZombies-mac.zip` and `appcast.xml` into the release of the tag. The release needs the repository secret `SPARKLE_PRIVATE_KEY`, the private key that goes with `macos/sparkle-public-key.txt`.
+Pushing a tag `v<version>` (e.g. `v0.2.7.2`) runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml), which builds every platform (Linux, Windows, macOS, Android, iOS, WebAssembly) and puts all of them into the release of the tag. For the Mac app it calls [`.github/workflows/mac-release.yml`](.github/workflows/mac-release.yml), which builds the app and signs it for updates, so the release also holds `PlantsVsZombies-mac.zip` and `appcast.xml`. In a fork, the AUR and GitHub Pages jobs of upstream are skipped. The release needs the repository secret `SPARKLE_PRIVATE_KEY`, the private key that goes with `macos/sparkle-public-key.txt`.
 
 The app updates itself through [Sparkle](https://sparkle-project.org/): about once a day it looks at the latest release of the repository of the remote `origin`, and when that has a newer build it shows a window with **Install Update**, which downloads the update, checks its signature, replaces the app and starts it again. **Options → Check Updates** on the main menu looks right away. The build number is the number of commits, so every release built from a later commit counts as newer.
 
