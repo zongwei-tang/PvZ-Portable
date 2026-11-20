@@ -176,6 +176,14 @@ public:
 	void BltTriangles(const TriVertex theVertices[][3], int theNumTriangles, unsigned int theColor, float tx = 0, float ty = 0, bool clampUv = true, const uint8_t* theDrawModes = nullptr);
 };
 
+// A piece of the logical screen and where in the window it is shown (SetPresentationTiles): mSource in logical
+// coordinates, mDest in window points.
+struct PresentationTile
+{
+	FRect					mSource;
+	FRect					mDest;
+};
+
 class GLInterface : public NativeDisplay
 {
 public:
@@ -230,6 +238,32 @@ public:
 
 	bool					PreDraw();
 	void					Flush();
+
+	// Tiled presentation: with tiles, a frame is drawn into a texture of the logical screen, and Flush() shows the tiles
+	// of it in the window instead of the letterboxed screen (the phone layout of a level). New tiles take effect with the
+	// next frame; none goes back to the letterboxed screen. MapWindowToLogical maps a window point through the tiles on
+	// screen: false without tiles, and a point under no tile maps far outside the logical screen.
+	void					SetPresentationTiles(std::vector<PresentationTile> theTiles);
+	bool					MapWindowToLogical(double& theX, double& theY) const;
+	bool					IsTiled() const { return !mTiles.empty(); }
+
+private:
+	std::vector<PresentationTile>	mTiles;			// those of the frame being drawn and of the window now
+	std::vector<PresentationTile>	mPendingTiles;
+	bool					mTilesPending = false;
+	unsigned int			mWindowFramebuffer = 0;	// the window's own: not 0 on iOS
+	unsigned int			mTileFramebuffer = 0;
+	unsigned int			mTileTexture = 0;
+	int						mTileTextureWidth = 0;
+	int						mTileTextureHeight = 0;
+	int						mLetterboxX = 0, mLetterboxY = 0, mLetterboxWidth = 0, mLetterboxHeight = 0;
+
+	bool					EnsureTileTarget();
+	void					BindFrameTarget(bool theClear);
+	void					PresentTiles();
+	void					ReleaseTileTarget();
+
+public:
 
 	bool					CreateImageTexture(MemoryImage* theImage);
 	bool					RecoverBits(MemoryImage* theImage);

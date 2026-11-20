@@ -278,6 +278,14 @@ if(CLOUD_SAVE AND (CURL_FOUND OR CLOUD_SAVE_APPLE_HTTP))
 	endif()
 endif()
 
+# Tests of the geometry of the phone layout of levels (src/Lawn/System/PhoneLayout.h)
+option(PHONE_LAYOUT_TESTS "Build phone-layout-test, tests of the phone layout geometry" OFF)
+if(PHONE_LAYOUT_TESTS)
+	add_executable(phone-layout-test tests/phone_layout_test.cpp src/Lawn/System/PhoneLayout.cpp)
+	target_include_directories(phone-layout-test PRIVATE src/Lawn/System)
+	target_compile_features(phone-layout-test PRIVATE cxx_std_20)
+endif()
+
 # The Mac app updates itself through Sparkle, which the app made by macos/build-app.sh carries and the game loads at run
 # time (see src/Lawn/System/AppUpdater.h), so building needs no Sparkle.
 if(APPLE AND NOT IOS)

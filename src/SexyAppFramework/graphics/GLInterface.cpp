@@ -29,6 +29,8 @@
 #include "graphics/Graphics.h"
 #include "graphics/MemoryImage.h"
 #include "SexyAppBase.h"
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -1177,6 +1179,10 @@ GLInterface::GLInterface(SexyAppBase* theApp)
 GLInterface::~GLInterface()
 {
 	mScreenImage.reset();
+	mTiles.clear();
+	mPendingTiles.clear();
+	mTilesPending = false;
+	ReleaseTileTarget();
 	Flush();
 	for (auto *img : mImageSet)
 	{
@@ -1253,7 +1259,11 @@ void GLInterface::UpdateViewport()
 		vy = (height - vh) / 2;
 	}
 
-	glViewport(vx, vy, vw, vh);
+	mLetterboxX = vx;
+	mLetterboxY = vy;
+	mLetterboxWidth = vw;
+	mLetterboxHeight = vh;
+	BindFrameTarget(false);		// the letterbox, or the texture of the tiles
 	mPresentationRect = Rect(
 		windowWidth * vx / width,
 		windowHeight * vy / height,
@@ -1265,6 +1275,11 @@ int GLInterface::Init(bool IsWindowed)
 {
 	GfxFlush();
 	PlatformGLInit();
+
+	// the framebuffer of the window, to come back to from the texture of tiled presentation (on iOS it is not 0)
+	GLint aWindowFramebuffer = 0;
+	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &aWindowFramebuffer);
+	mWindowFramebuffer = static_cast<unsigned int>(aWindowFramebuffer);
 
 	gProgram = shaderLoad(SHADER_CODE);
 	if (gProgram == 0)
@@ -1361,15 +1376,215 @@ bool GLInterface::PreDraw()
 void GLInterface::Flush()
 {
 	GfxFlush();
+	if (!mTiles.empty())
+		PresentTiles();		// the frame was drawn into the texture: its tiles go to the window
 #ifdef __SWITCH__
 	eglSwapBuffers(mApp->mWindow, mApp->mSurface);
 #else
 	SDL_GL_SwapWindow(mApp->mWindow.get());
 #endif
+
+	// tiles set during this frame apply to the next one, which is drawn into the texture for them or letterboxed
+	if (mTilesPending)
+	{
+		mTiles = std::move(mPendingTiles);
+		mPendingTiles.clear();
+		mTilesPending = false;
+		if (!mTiles.empty() && !EnsureTileTarget())
+			mTiles.clear();		// no texture to draw into: letterboxed as before
+	}
 #ifndef __EMSCRIPTEN__
 	// Clear back buffer after swap (content undefined)
+	BindFrameTarget(true);
+#else
+	BindFrameTarget(!mTiles.empty());	// Emscripten: browser composites after rAF, no clear needed for the window
+#endif
+}
+
+void GLInterface::SetPresentationTiles(std::vector<PresentationTile> theTiles)
+{
+	mPendingTiles = std::move(theTiles);
+	mTilesPending = true;
+}
+
+bool GLInterface::MapWindowToLogical(double& theX, double& theY) const
+{
+	if (mTiles.empty())
+		return false;
+	for (const PresentationTile& aTile : mTiles)
+	{
+		const FRect& d = aTile.mDest;
+		if (theX < d.mX || theX >= d.mX + d.mWidth || theY < d.mY || theY >= d.mY + d.mHeight || d.mWidth <= 0 || d.mHeight <= 0)
+			continue;
+		theX = aTile.mSource.mX + (theX - d.mX) * aTile.mSource.mWidth / d.mWidth;
+		theY = aTile.mSource.mY + (theY - d.mY) * aTile.mSource.mHeight / d.mHeight;
+		return true;
+	}
+	theX = -10000;	// under no tile: off the logical screen, where nothing takes a click
+	theY = -10000;
+	return true;
+}
+
+// The texture a tiled frame is drawn into: the logical screen at the largest scale a tile shows it at in window pixels
+// (at most 3), so that no tile is blurrier than the letterboxed screen would be.
+bool GLInterface::EnsureTileTarget()
+{
+	int aPixelWidth = 0, aPixelHeight = 0, aWindowWidth = 0, aWindowHeight = 0;
+#ifdef __SWITCH__
+	aPixelWidth = aWindowWidth = 1280;
+	aPixelHeight = aWindowHeight = 720;
+#else
+	SDL_GetWindowSizeInPixels(mApp->mWindow.get(), &aPixelWidth, &aPixelHeight);
+	SDL_GetWindowSize(mApp->mWindow.get(), &aWindowWidth, &aWindowHeight);
+#endif
+	if (aPixelWidth <= 0 || aWindowWidth <= 0 || mWidth <= 0 || mHeight <= 0)
+		return false;
+	double aScale = 1;
+	for (const PresentationTile& aTile : mTiles)
+	{
+		if (aTile.mSource.mWidth > 0)
+			aScale = std::max(aScale, aTile.mDest.mWidth / aTile.mSource.mWidth * aPixelWidth / aWindowWidth);
+	}
+	aScale = std::min(aScale, 3.0);
+	int aWidth = static_cast<int>(std::ceil(mWidth * aScale));
+	int aHeight = static_cast<int>(std::ceil(mHeight * aScale));
+	if (MAX_TEXTURE_SIZE > 0 && (aWidth > MAX_TEXTURE_SIZE || aHeight > MAX_TEXTURE_SIZE))
+	{
+		double aFit = std::min(static_cast<double>(MAX_TEXTURE_SIZE) / mWidth, static_cast<double>(MAX_TEXTURE_SIZE) / mHeight);
+		aWidth = static_cast<int>(mWidth * aFit);
+		aHeight = static_cast<int>(mHeight * aFit);
+	}
+	if (mTileFramebuffer != 0 && aWidth == mTileTextureWidth && aHeight == mTileTextureHeight)
+		return true;
+
+	GfxFlush();
+	ReleaseTileTarget();
+	GLuint aTexture = 0, aFramebuffer = 0;
+	glGenTextures(1, &aTexture);
+	glBindTexture(GL_TEXTURE_2D, aTexture);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, aWidth, aHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+	glGenFramebuffers(1, &aFramebuffer);
+	glBindFramebuffer(GL_FRAMEBUFFER, aFramebuffer);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, aTexture, 0);
+	bool aComplete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+	glBindFramebuffer(GL_FRAMEBUFFER, mWindowFramebuffer);
+	gAppliedTextureValid = false;
+	if (!aComplete)
+	{
+		glDeleteFramebuffers(1, &aFramebuffer);
+		glDeleteTextures(1, &aTexture);
+		return false;
+	}
+	mTileTexture = aTexture;
+	mTileFramebuffer = aFramebuffer;
+	mTileTextureWidth = aWidth;
+	mTileTextureHeight = aHeight;
+	return true;
+}
+
+void GLInterface::ReleaseTileTarget()
+{
+	if (mTileFramebuffer != 0)
+	{
+		GLuint aFramebuffer = mTileFramebuffer;
+		glDeleteFramebuffers(1, &aFramebuffer);
+	}
+	if (mTileTexture != 0)
+	{
+		GLuint aTexture = mTileTexture;
+		glDeleteTextures(1, &aTexture);
+	}
+	mTileFramebuffer = mTileTexture = 0;
+	mTileTextureWidth = mTileTextureHeight = 0;
+	gAppliedTextureValid = false;
+}
+
+// Where the frame is drawn: the texture of the tiles, or the letterbox of the window
+void GLInterface::BindFrameTarget(bool theClear)
+{
+	if (!mTiles.empty() && mTileFramebuffer != 0)
+	{
+		glBindFramebuffer(GL_FRAMEBUFFER, mTileFramebuffer);
+		glViewport(0, 0, mTileTextureWidth, mTileTextureHeight);
+	}
+	else
+	{
+		glBindFramebuffer(GL_FRAMEBUFFER, mWindowFramebuffer);
+		if (mLetterboxWidth > 0 && mLetterboxHeight > 0)	// none before the first UpdateViewport()
+			glViewport(mLetterboxX, mLetterboxY, mLetterboxWidth, mLetterboxHeight);
+	}
+	if (theClear)
+		glClear(GL_COLOR_BUFFER_BIT);
+}
+
+// Draws the tiles of the texture into the window, through the batch and the shader the game draws with, in window
+// points; then puts back the projection of the logical screen.
+void GLInterface::PresentTiles()
+{
+	int aPixelWidth = 0, aPixelHeight = 0, aWindowWidth = 0, aWindowHeight = 0;
+#ifdef __SWITCH__
+	aPixelWidth = aWindowWidth = 1280;
+	aPixelHeight = aWindowHeight = 720;
+#else
+	SDL_GetWindowSizeInPixels(mApp->mWindow.get(), &aPixelWidth, &aPixelHeight);
+	SDL_GetWindowSize(mApp->mWindow.get(), &aWindowWidth, &aWindowHeight);
+#endif
+	if (mTileFramebuffer == 0 || aPixelWidth <= 0 || aWindowWidth <= 0)
+		return;
+
+	GfxFlush();
+	glBindFramebuffer(GL_FRAMEBUFFER, mWindowFramebuffer);
+	glViewport(0, 0, aPixelWidth, aPixelHeight);
 	glClear(GL_COLOR_BUFFER_BIT);
-#endif // Emscripten: browser composites after rAF, no clear needed
+	float anOrtho[16];
+	MakeOrthoMatrix(0, static_cast<float>(aWindowWidth), static_cast<float>(aWindowHeight), 0, -10, 10, anOrtho);
+	glUniformMatrix4fv(gUfViewProjMtx, 1, GL_FALSE, anOrtho);
+
+	GfxDrawState aSaved = gDrawState;
+	// the texture holds the logical screen bottom up: logical y 0 is its top row, v = 1
+	float aHalfTexelU = 0.5f / mTileTextureWidth, aHalfTexelV = 0.5f / mTileTextureHeight;
+	for (const PresentationTile& aTile : mTiles)
+	{
+		float u0 = static_cast<float>(aTile.mSource.mX / mWidth);
+		float u1 = static_cast<float>((aTile.mSource.mX + aTile.mSource.mWidth) / mWidth);
+		float vTop = 1.0f - static_cast<float>(aTile.mSource.mY / mHeight);
+		float vBottom = 1.0f - static_cast<float>((aTile.mSource.mY + aTile.mSource.mHeight) / mHeight);
+		float x0 = static_cast<float>(aTile.mDest.mX), y0 = static_cast<float>(aTile.mDest.mY);
+		float x1 = static_cast<float>(aTile.mDest.mX + aTile.mDest.mWidth), y1 = static_cast<float>(aTile.mDest.mY + aTile.mDest.mHeight);
+
+		gDrawState = GfxDrawState{};
+		gDrawState.texture = mTileTexture;
+		gDrawState.blendSrc = GL_ONE;		// a copy, alpha and all: what the game drew is opaque
+		gDrawState.blendDst = GL_ZERO;
+		gDrawState.filter = GL_LINEAR;
+		gDrawState.useTexture = 1;
+		gDrawState.clampUv = 1;
+		gDrawState.uvBounds[0] = std::min(u0, u1) + aHalfTexelU;
+		gDrawState.uvBounds[1] = std::min(vTop, vBottom) + aHalfTexelV;
+		gDrawState.uvBounds[2] = std::max(u0, u1) - aHalfTexelU;
+		gDrawState.uvBounds[3] = std::max(vTop, vBottom) - aHalfTexelV;
+
+		const uint32_t WHITE = 0xFFFFFFFFu;
+		GLVertex aQuad[6] = {
+			{ x0, y0, 0, WHITE, u0, vTop }, { x1, y0, 0, WHITE, u1, vTop }, { x0, y1, 0, WHITE, u0, vBottom },
+			{ x1, y0, 0, WHITE, u1, vTop }, { x1, y1, 0, WHITE, u1, vBottom }, { x0, y1, 0, WHITE, u0, vBottom },
+		};
+		GfxBegin(GL_TRIANGLES);
+		GfxAddVertices(aQuad, 6);
+		GfxEnd();
+	}
+	GfxFlush();
+	gDrawState = aSaved;
+	glBindTexture(GL_TEXTURE_2D, 0);	// the next frame is drawn into this texture: it must not stay bound for sampling
+
+	MakeOrthoMatrix(0, static_cast<float>(mWidth), static_cast<float>(mHeight), 0, -10, 10, anOrtho);
+	glUniformMatrix4fv(gUfViewProjMtx, 1, GL_FALSE, anOrtho);
+	gAppliedStateValid = false;
+	gAppliedTextureValid = false;
 }
 
 bool GLInterface::CreateImageTexture(MemoryImage *theImage)
@@ -1410,7 +1625,9 @@ bool GLInterface::RecoverBits(MemoryImage* theImage)
 			glActiveTexture(GL_TEXTURE0);
 			glBindTexture(GL_TEXTURE_2D, piece.mTexture);
 
-			// FBO readback (ES 2.0 has no glGetTexImage)
+			// FBO readback (ES 2.0 has no glGetTexImage); afterwards back to the framebuffer drawn into
+			GLint aDrawFramebuffer = 0;
+			glGetIntegerv(GL_FRAMEBUFFER_BINDING, &aDrawFramebuffer);
 			GLuint fbo;
 			glGenFramebuffers(1, &fbo);
 			glBindFramebuffer(GL_FRAMEBUFFER, fbo);
@@ -1418,7 +1635,7 @@ bool GLInterface::RecoverBits(MemoryImage* theImage)
 
 			if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
 			{
-				glBindFramebuffer(GL_FRAMEBUFFER, 0);
+				glBindFramebuffer(GL_FRAMEBUFFER, aDrawFramebuffer);
 				glDeleteFramebuffers(1, &fbo);
 				return false;
 			}
@@ -1426,7 +1643,7 @@ bool GLInterface::RecoverBits(MemoryImage* theImage)
 			std::vector<uint32_t> buf(w * h);
 			glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, buf.data());
 
-			glBindFramebuffer(GL_FRAMEBUFFER, 0);
+			glBindFramebuffer(GL_FRAMEBUFFER, aDrawFramebuffer);
 			glDeleteFramebuffers(1, &fbo);
 
 			uint32_t* dst = theImage->GetBits() + offy * theImage->GetWidth() + offx;

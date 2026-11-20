@@ -163,6 +163,11 @@ public:
 	void							ConfirmQuit();
 	void							ConfirmCheckForUpdates() { ; }
 	void							CheckForUpdates();
+
+	// The phone layout of a level on a wide phone screen (Lawn/System/PhoneLayout.h), an option on phones
+	bool							mPhoneLayout = true;
+	bool							PhoneLayoutApplies();
+	void							UpdatePhoneLayout();
 	void							DoUserDialog();
 	void							FinishUserDialog(bool isYes);
 	void							DoCreateUserDialog();

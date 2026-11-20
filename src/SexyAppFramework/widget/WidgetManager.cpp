@@ -28,9 +28,11 @@
 #include "graphics/Image.h"
 #include "misc/KeyCodes.h"
 #include "graphics/GLImage.h"
+#include "graphics/GLInterface.h"
 #include "SexyAppBase.h"
 #include "misc/PerfTimer.h"
 #include "misc/Debug.h"
+#include <cmath>
 
 using namespace Sexy;
 
@@ -214,6 +216,17 @@ void WidgetManager::DoMouseUps(Widget* theWidget, ulong theDownCode)
 
 void WidgetManager::RemapMouse(int& theX, int& theY)
 {
+	// tiled presentation (the phone layout of a level): through the tile under the point
+	if (mApp != nullptr && mApp->mGLInterface)
+	{
+		double aX = theX, aY = theY;
+		if (mApp->mGLInterface->MapWindowToLogical(aX, aY))
+		{
+			theX = static_cast<int>(std::floor(aX));
+			theY = static_cast<int>(std::floor(aY));
+			return;
+		}
+	}
 	theX = ( theX - mMouseSourceRect.mX ) * mMouseDestRect.mWidth / mMouseSourceRect.mWidth + mMouseDestRect.mX;
 	theY = ( theY - mMouseSourceRect.mY ) * mMouseDestRect.mHeight / mMouseSourceRect.mHeight + mMouseDestRect.mY;
 }

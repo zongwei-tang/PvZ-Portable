@@ -84,7 +84,12 @@ NewOptionsDialog::NewOptionsDialog(LawnApp* theApp, bool theFromGameSelector) :
 	mSfxVolumeSlider = std::make_unique<Slider>(IMAGE_OPTIONS_SLIDERSLOT, IMAGE_OPTIONS_SLIDERKNOB2, NewOptionsDialog::NewOptionsDialog_SoundVolume, this);
 	mSfxVolumeSlider->SetValue(theApp->GetSfxVolume() / 0.65);
 
+#if defined(__IPHONEOS__) || (defined(__ANDROID__) && !defined(__TERMUX__))
+	// phones are always full screen: there the checkbox turns the phone layout of levels on and off
+	mFullscreenCheckbox = MakeNewCheckbox(NewOptionsDialog::NewOptionsDialog_Fullscreen, this, theApp->mPhoneLayout);
+#else
 	mFullscreenCheckbox = MakeNewCheckbox(NewOptionsDialog::NewOptionsDialog_Fullscreen, this, !theApp->mIsWindowed);
+#endif
 	mHardwareAccelerationCheckbox = MakeNewCheckbox(NewOptionsDialog::NewOptionsDialog_HardwareAcceleration, this, theApp->Is3DAccelerated());
 
 	if (mFromGameSelector)
@@ -211,7 +216,11 @@ void NewOptionsDialog::Draw(Sexy::Graphics* g)
 	PvzpDrawString(g, mApp->GetString("OPTIONS_MUSIC_LABEL", "Music"), aSliderLabelsX, 140 + aMusicOffset, FONT_DWARVENTODCRAFT18, aTextColor, DrawStringJustification::DS_ALIGN_RIGHT);
 	PvzpDrawString(g, mApp->GetString("OPTIONS_SOUNDFX", "Sound FX"), aSliderLabelsX, 167 + aSfxOffset, FONT_DWARVENTODCRAFT18, aTextColor, DrawStringJustification::DS_ALIGN_RIGHT);
 	PvzpDrawString(g, mApp->GetString("OPTIONS_3D_ACCELERATION", "3D Acceleration"), aCheckboxLabelsX, 197 + a3DAccelOffset, FONT_DWARVENTODCRAFT18, aTextColor, DrawStringJustification::DS_ALIGN_RIGHT);
+#if defined(__IPHONEOS__) || (defined(__ANDROID__) && !defined(__TERMUX__))
+	PvzpDrawString(g, "Phone Layout", aCheckboxLabelsX, 229 + aFullScreenOffset, FONT_DWARVENTODCRAFT18, aTextColor, DrawStringJustification::DS_ALIGN_RIGHT);
+#else
 	PvzpDrawString(g, mApp->GetString("OPTIONS_FULL_SCREEN", "Full Screen"), aCheckboxLabelsX, 229 + aFullScreenOffset, FONT_DWARVENTODCRAFT18, aTextColor, DrawStringJustification::DS_ALIGN_RIGHT);
+#endif
 	if (aFontScale != 1.0f)
 		g->SetScale(1.0f, 1.0f, 0.0f, 0.0f);
 }
@@ -241,6 +250,9 @@ void NewOptionsDialog::CheckboxChecked(int theId, bool checked)
 	switch (theId)
 	{
 	case NewOptionsDialog::NewOptionsDialog_Fullscreen:
+#if defined(__IPHONEOS__) || (defined(__ANDROID__) && !defined(__TERMUX__))
+		break;	// the phone layout, applied when the dialog closes (LawnApp::KillNewOptionsDialog)
+#endif
 		if (!checked && mApp->mForceFullscreen)
 		{
 			mApp->DoDialog(

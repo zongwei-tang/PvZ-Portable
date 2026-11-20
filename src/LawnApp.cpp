@@ -38,6 +38,7 @@
 #include "Lawn/System/Music.h"
 #include "Lawn/System/CloudSave.h"
 #include "Lawn/System/AppUpdater.h"
+#include "Lawn/System/PhoneLayout.h"
 #include "Lawn/System/SaveGame.h"
 #include "PvzpLib/PvzpDebug.h"
 #include "PvzpLib/PvzpFoley.h"
@@ -46,6 +47,10 @@
 #include "Lawn/System/PoolEffect.h"
 #include "Lawn/System/ProfileMgr.h"
 #include "Lawn/Widget/GameButton.h"
+#include "Lawn/SeedPacket.h"
+#include "graphics/GLInterface.h"
+#include <SDL3/SDL.h>
+#include <cstdlib>
 #include "PvzpLib/Reanimator.h"
 #include "Lawn/Widget/UserDialog.h"
 #include "Lawn/System/TypingCheck.h"
@@ -353,6 +358,7 @@ void LawnApp::WriteToRegistry()
 void LawnApp::ReadFromRegistry()
 {
 	SexyApp::ReadFromRegistry();
+	RegistryReadBoolean("PhoneLayout", &mPhoneLayout);
 }
 
 bool LawnApp::WriteCurrentUserConfig()
@@ -1122,6 +1128,12 @@ bool LawnApp::KillNewOptionsDialog()
 
 	bool wantWindowed = !aNewOptionsDialog->mFullscreenCheckbox->IsChecked();
 	bool want3D = aNewOptionsDialog->mHardwareAccelerationCheckbox->IsChecked();
+#if defined(__IPHONEOS__) || (defined(__ANDROID__) && !defined(__TERMUX__))
+	// phones are always full screen: the checkbox is the one of the phone layout there
+	mPhoneLayout = aNewOptionsDialog->mFullscreenCheckbox->IsChecked();
+	RegistryWriteBoolean("PhoneLayout", mPhoneLayout);
+	wantWindowed = false;
+#endif
 	SwitchScreenMode(wantWindowed, want3D, false);
 
 	KillDialog(Dialogs::DIALOG_NEWOPTIONS);
@@ -1347,6 +1359,93 @@ void LawnApp::EnsureTrainerPanel()
 	mTrainerPanel = std::make_unique<TrainerPanel>(this);
 	mWidgetManager->AddWidget(mTrainerPanel.get());
 	mTrainerPanel->UpdateClosedState();
+}
+
+// A level in the phone layout: on phones, with the option on, while a normal level is played. Levels with their own
+// strip along the top (conveyor belt, slot machine, Zen Garden, ...), the seed chooser, cutscenes and dialogs keep the
+// 800x600 screen. PVZP_PHONE_LAYOUT=1 turns it on for a wide window elsewhere too, to try it.
+bool LawnApp::PhoneLayoutApplies()
+{
+#if defined(__IPHONEOS__) || (defined(__ANDROID__) && !defined(__TERMUX__))
+	if (!mPhoneLayout)
+		return false;
+#else
+	static const bool anEnabled = []() { const char* aValue = std::getenv("PVZP_PHONE_LAYOUT"); return aValue != nullptr && aValue[0] == '1'; }();
+	if (!anEnabled)
+		return false;
+#endif
+	if (mBoard == nullptr || !mBoard->mSeedBank || !mLoadingThreadCompleted || mGameScene != GameScenes::SCENE_PLAYING)
+		return false;
+	if (GetDialogCount() > 0 || (mTrainerPanel && mTrainerPanel->mOpen))
+		return false;
+	if (mBoard->HasConveyorBeltSeedBank() || IsSlotMachineLevel() || IsChallengeWithoutSeedBank() || IsScaryPotterLevel() || IsWhackAZombieLevel())
+		return false;
+	if (mGameMode == GameMode::GAMEMODE_CHALLENGE_ZEN_GARDEN || mGameMode == GameMode::GAMEMODE_TREE_OF_WISDOM ||
+		mGameMode == GameMode::GAMEMODE_CHALLENGE_LAST_STAND || mGameMode == GameMode::GAMEMODE_CHALLENGE_BEGHOULED ||
+		mGameMode == GameMode::GAMEMODE_CHALLENGE_BEGHOULED_TWIST)
+		return false;
+	// the bank where a level keeps it, and the board not panned (as in cutscenes)
+	if (mBoard->mX != 0 || mBoard->mY != 0 || mBoard->mSeedBank->mY != 0)
+		return false;
+	return true;
+}
+
+void LawnApp::UpdatePhoneLayout()
+{
+	if (!mGLInterface || !mWindow)
+		return;
+	std::vector<PresentationTile> aTiles;
+	if (PhoneLayoutApplies())
+	{
+		int aWindowWidth = 0, aWindowHeight = 0;
+		SDL_GetWindowSize(mWindow.get(), &aWindowWidth, &aWindowHeight);
+		SDL_Rect aSafe{ 0, 0, aWindowWidth, aWindowHeight };
+		if (!SDL_GetWindowSafeArea(mWindow.get(), &aSafe) || aSafe.w <= 0 || aSafe.h <= 0)
+			aSafe = SDL_Rect{ 0, 0, aWindowWidth, aWindowHeight };
+
+		const SeedBank& aBank = *mBoard->mSeedBank;
+		PhoneLayout::Input anInput;
+		anInput.mScreenWidth = aWindowWidth;
+		anInput.mScreenHeight = aWindowHeight;
+		anInput.mSafeArea = PhoneLayout::Box{ static_cast<double>(aSafe.x), static_cast<double>(aSafe.y), static_cast<double>(aSafe.w), static_cast<double>(aSafe.h) };
+		// the lawn without the top strip, but with the heads of the zombies in the top row (they stand at about y 50)
+		anInput.mLawn = PhoneLayout::Box{ 0, 50, static_cast<double>(BOARD_WIDTH), static_cast<double>(BOARD_HEIGHT - 50) };
+
+		double aFirstPacketX = aBank.mX + 83;
+		for (int i = 0; i < aBank.mNumPackets && i < SEEDBANK_MAX; i++)
+		{
+			const SeedPacket& aPacket = aBank.mSeedPackets[i];
+			// with a little margin: the highlight of a chosen packet reaches past it
+			anInput.mPackets.push_back(PhoneLayout::Box{ aBank.mX + aPacket.mX - 2.0, aBank.mY + aPacket.mY - 2.0,
+				aPacket.mWidth + 4.0, aPacket.mHeight + 4.0 });
+			aFirstPacketX = std::min(aFirstPacketX, static_cast<double>(aBank.mX + aPacket.mX));
+		}
+		anInput.mSunCounter = PhoneLayout::Box{ static_cast<double>(aBank.mX), 0, std::max(1.0, aFirstPacketX - 2.0 - aBank.mX),
+			static_cast<double>(aBank.mY + aBank.mHeight) };
+		double aBankRight = aBank.mX + aBank.mWidth;
+		if (mBoard->mShowShovel)
+		{
+			Rect aShovel = mBoard->GetShovelButtonRect();
+			anInput.mShovel = PhoneLayout::Box{ static_cast<double>(aShovel.mX), static_cast<double>(std::max(0, aShovel.mY)),
+				static_cast<double>(aShovel.mWidth), static_cast<double>(aShovel.mHeight + std::min(0, aShovel.mY)) };
+			aBankRight = std::max(aBankRight, anInput.mShovel.Right());
+		}
+		anInput.mBankRight = aBankRight;
+		anInput.mBankBottom = aBank.mY + aBank.mHeight;
+		if (mBoard->mMenuButton && !mBoard->mMenuButton->mBtnNoDraw)
+		{
+			const GameButton& aMenu = *mBoard->mMenuButton;
+			double aTop = std::max(0, aMenu.mY);
+			anInput.mMenuButton = PhoneLayout::Box{ static_cast<double>(aMenu.mX), aTop, static_cast<double>(aMenu.mWidth), aMenu.mY + aMenu.mHeight - aTop };
+		}
+
+		for (const PhoneLayout::Tile& aTile : PhoneLayout::Compute(anInput))
+		{
+			aTiles.push_back(PresentationTile{ FRect(aTile.mSource.mX, aTile.mSource.mY, aTile.mSource.mWidth, aTile.mSource.mHeight),
+				FRect(aTile.mDest.mX, aTile.mDest.mY, aTile.mDest.mWidth, aTile.mDest.mHeight) });
+		}
+	}
+	mGLInterface->SetPresentationTiles(std::move(aTiles));	// none: letterboxed
 }
 
 void LawnApp::CheckForUpdates()
@@ -1698,6 +1797,7 @@ void LawnApp::UpdateFrames()
 	}
 
 	CloudSave::Update();
+	UpdatePhoneLayout();
 }
 
 void LawnApp::ToggleSlowMo()
