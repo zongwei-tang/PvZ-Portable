@@ -8,6 +8,7 @@
 
 #include "CloudSaveDialog.h"
 #include "GameButton.h"
+#include "../System/CloudSignInSheet.h"
 #include "../../LawnApp.h"
 #include "../../Resources.h"
 #include "../../PvzpLib/PvzpCommon.h"
@@ -281,10 +282,11 @@ std::string CloudSaveDialog::IdleStatus() const
 }
 
 // The address also goes to the clipboard: the browser may not open, or open behind the game or in another profile.
+// On iOS the page opens in the system's sign-in sheet, over the game (see CloudSignInSheet.h).
 void CloudSaveDialog::OpenSignInPage()
 {
 	mPageCopied = SDL_SetClipboardText(mSignIn.mPage.c_str());
-	if (mSignIn.mPage.starts_with("https://"))
+	if (mSignIn.mPage.starts_with("https://") && !CloudSignInSheet::Open(mSignIn.mPage))
 		SDL_OpenURL(mSignIn.mPage.c_str());
 }
 
@@ -394,6 +396,18 @@ void CloudSaveDialog::Update()
 		UpdateButtons();
 	}
 
+	// The sign-in sheet (iOS): the player closing it stops the sign-in, as Stop Sign-In would; the game closes it once
+	// the page came back.
+	if (CloudSignInSheet::TakeCancelled() && SigningIn() && mStartedSignIn && !mSignIn.mAnswered)
+	{
+		CloudSave::CancelSignIn();
+		mSignIn = CloudSave::GetSignIn();
+		ShowSignInEnd();
+		UpdateButtons();
+	}
+	if (!SigningIn() || mSignIn.mAnswered)
+		CloudSignInSheet::Close();
+
 	if (!mStatusIsMessage && CloudSave::StatusText() != mSeenSyncStatus)
 		ShowIdleStatus();
 }
@@ -502,6 +516,7 @@ bool CloudSaveDialog::Apply(bool theForSignIn)
 // Cancel stops a sign-in started in this dialog, but not one that an earlier dialog saved and that still runs.
 void CloudSaveDialog::Close(bool theCancel)
 {
+	CloudSignInSheet::Close();
 	if (theCancel && SigningIn() && mStartedSignIn)
 		CloudSave::CancelSignIn();
 	if (theCancel && mSavedForSignIn)

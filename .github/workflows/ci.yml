@@ -761,6 +761,7 @@ jobs:
           -DCMAKE_OSX_DEPLOYMENT_TARGET=$IOS_DEPLOY_TARGET \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_BUILD_TYPE=Release \
+          -DIOS_UPDATE_REPOSITORY="$GITHUB_REPOSITORY" \
           -G Xcode
 
         cmake --build $BUILD_DIR --config Release -- \
@@ -776,6 +777,17 @@ jobs:
         cd dist
         zip -r -y pvz-portable-ios-arm64.ipa Payload/
         rm -rf Payload
+
+    # The AltStore source that AltStore and SideStore install and update the app from, and that the app itself looks
+    # at for updates (src/Lawn/System/AppUpdater.h): one app, the build of this tag
+    - name: Write altstore-source.json
+      if: github.ref_type == 'tag'
+      env:
+        ALTSTORE_ICON_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/ios/Assets.xcassets/AppIcon.appiconset/AppIcon.png
+      run: |
+        APP_PATH=$(find build-ios -name "pvz-portable.app" -path "*Release*" | head -1)
+        python3 -I ios/altstore-source.py "$APP_PATH/Info.plist" dist/pvz-portable-ios-arm64.ipa dist/altstore-source.json
+        cat dist/altstore-source.json
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v7
@@ -895,6 +907,7 @@ jobs:
 
         echo "Preparing iOS file..."
         mv artifacts/pvz-portable-ios/pvz-portable-ios-arm64.ipa release_files/pvz-portable-ios-arm64.ipa
+        mv artifacts/pvz-portable-ios/altstore-source.json release_files/altstore-source.json
 
         echo "Preparing WebAssembly file..."
         cd artifacts/pvz-portable-wasm

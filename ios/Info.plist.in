@@ -51,6 +51,26 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<!-- Cloud save: plain http only to a WebDAV server on the local network (.local names, IP addresses); everywhere
+	     else https, as iOS requires -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Cloud save can sync with a WebDAV server on your local network.</string>
+	<!-- Updates (src/Lawn/System/AppUpdater.h): the AltStore source of the latest release, and the two apps that can
+	     install from it -->
+	<key>PVZPUpdateSourceURL</key>
+	<string>@PVZP_UPDATE_SOURCE_URL@</string>
+	<key>PVZPReleasePageURL</key>
+	<string>@PVZP_RELEASE_PAGE_URL@</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>altstore</string>
+		<string>sidestore</string>
+	</array>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>

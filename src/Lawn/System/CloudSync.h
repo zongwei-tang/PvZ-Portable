@@ -148,8 +148,9 @@ public:
 	virtual HttpResponse	Request(const HttpRequest& theRequest) = 0;
 };
 
-// theStop, when given, is asked about once a second while a request runs: true gives it up, as if offline.
-std::unique_ptr<Transport>	MakeCurlTransport(std::function<bool()> theStop = nullptr);
+// The HTTP client of this system: libcurl, or NSURLSession on iOS (PVZP_CLOUD_HTTP_APPLE, CloudHttpApple.mm). theStop,
+// when given, is asked about once a second while a request runs: true gives it up, as if offline.
+std::unique_ptr<Transport>	MakeHttpTransport(std::function<bool()> theStop = nullptr);
 
 // One cloud folder. Paths are relative to it ("manifest.txt", "files/user1.dat.0123456789abcdef").
 class Store

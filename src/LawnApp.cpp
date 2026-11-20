@@ -37,7 +37,7 @@
 #include "PvzpLib/Trail.h"
 #include "Lawn/System/Music.h"
 #include "Lawn/System/CloudSave.h"
-#include "Lawn/System/MacUpdater.h"
+#include "Lawn/System/AppUpdater.h"
 #include "Lawn/System/SaveGame.h"
 #include "PvzpLib/PvzpDebug.h"
 #include "PvzpLib/PvzpFoley.h"
@@ -320,6 +320,9 @@ bool LawnApp::CanPauseNow()
 
 void LawnApp::GotFocus()
 {
+#if defined(__IPHONEOS__)
+	CloudSave::EnterForeground();
+#endif
 }
 
 void LawnApp::LostFocus()
@@ -329,6 +332,10 @@ void LawnApp::LostFocus()
 	{
 		DoPauseDialog();
 	}
+#endif
+#if defined(__IPHONEOS__)
+	// iOS may stop the game in the background without Shutdown(): upload the saves while it still runs
+	CloudSave::EnterBackground();
 #endif
 }
 
@@ -1245,7 +1252,7 @@ void LawnApp::Init()
 	PerfTimer mTimer;
 	mTimer.Start();
 
-	MacUpdater::Start();
+	AppUpdater::Start();
 	CloudSave::Init();
 	mProfileMgr->Load();
 
@@ -1344,7 +1351,7 @@ void LawnApp::EnsureTrainerPanel()
 
 void LawnApp::CheckForUpdates()
 {
-	MacUpdater::CheckNow();
+	AppUpdater::CheckNow();
 }
 
 bool LawnApp::TrainerHotkey()

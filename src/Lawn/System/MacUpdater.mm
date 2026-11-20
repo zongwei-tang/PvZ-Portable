@@ -6,7 +6,7 @@
 
 #import <Foundation/Foundation.h>
 
-#include "MacUpdater.h"
+#include "AppUpdater.h"
 
 // The two methods of SPUStandardUpdaterController this file calls, declared here so it builds without Sparkle's headers.
 @interface NSObject (PvzpSparkleUpdaterController)
@@ -21,7 +21,7 @@ namespace
 id gController = nil;	// never released: it lives as long as the app
 }
 
-namespace MacUpdater
+namespace AppUpdater
 {
 
 void Start()

@@ -121,6 +121,10 @@ Download the unsigned IPA from [Releases](https://github.com/wszqkzqk/PvZ-Portab
 1. **Sideload the IPA:** Install using [AltStore](https://altstore.io/), [TrollStore](https://github.com/opa334/TrollStore), or Xcode with a free Apple ID (note that free Apple ID signatures expire after 7 days, whereas TrollStore installations are permanent).
 2. **Copy Game Assets:** Open the iOS **Files** app (or Finder / iTunes file sharing on desktop) and copy `main.pak` and the `properties/` folder into the **PvZ Portable** Documents directory.
 
+The iOS app has [cloud save](#cloud-save) like the desktop builds. It signs in to Google or Microsoft in the system's sign-in sheet over the game, keeps the cloud settings and sign-ins out of the Files app, uploads changed saves when it goes to the background and looks at the cloud again when it comes back. Plain `http://` WebDAV only reaches servers on the local network; anywhere else iOS requires `https://`.
+
+**Updates:** the release of every tag of a repository that builds the app with its CI carries `altstore-source.json`, an [AltStore source](https://faq.altstore.io/developers/make-a-source). Add `https://github.com/<owner>/<repo>/releases/latest/download/altstore-source.json` as a source in AltStore or SideStore and install the app from there: they then show **Update** for every new release, which installs over the app and keeps the saves. **Options → Check Updates** in the game, and a check about once a day, tell when a newer build is out and open AltStore or SideStore.
+
 ### Web (Browser / WebAssembly)
 
 1. Open the [Online WebAssembly Player](https://wszqkzqk.github.io/PvZ-Portable/pvz-portable.html).
@@ -303,7 +307,7 @@ Demo files (`.dmo`) record deterministic input and RNG state for debugging and r
 - **Compiler:** C++20-capable compiler and standard library (`GCC`, `Clang`, or `MSVC`)
 - **Libraries:** `SDL3` (>= 3.2.12), `SDL3_mixer`, `libopenmpt`, `libpng`, `libjpeg-turbo`, `zlib`
 - **Graphics API:** `OpenGL ES 2.0` or `OpenGL 2.1+` headers/drivers
-- **Cloud save** (optional): `libcurl`. Without it the game builds without cloud save.
+- **Cloud save** (optional): `libcurl` (not on iOS, which uses its own HTTP client). Without it the game builds without cloud save.
 
 Install dependencies for your platform:
 
@@ -376,7 +380,9 @@ Pass `-D<OPTION>=ON/OFF` during the `cmake -B build` step to customize the build
 | `LOW_MEMORY` | `OFF` | Reduce memory footprint by disabling resource pre-caching (intended for consoles with limited RAM). |
 | `CONSOLE` | `OFF` (`ON` in `Debug` builds) | Attach a stdout/stderr console window on Windows. |
 | `BUILD_STATIC` | `OFF` | Statically link dependencies on Windows (MinGW) and glibc-based Linux. For MSVC, use a vcpkg `-static` triplet instead. |
-| `CLOUD_SAVE` | `ON`<br>(`OFF` on WebAssembly, Switch, Android, iOS and with `BUILD_STATIC`) | Build the [cloud save](#cloud-save) to WebDAV, Google Drive and OneDrive. Needs `libcurl`; when it is not found the game builds without cloud save. |
+| `CLOUD_SAVE` | `ON`<br>(`OFF` on WebAssembly, Switch, Android and with `BUILD_STATIC`) | Build the [cloud save](#cloud-save) to WebDAV, Google Drive and OneDrive. Needs `libcurl` (iOS uses NSURLSession instead); when it is not found the game builds without cloud save. |
+| `CLOUD_SAVE_APPLE_HTTP` | `OFF`<br>(always `ON` on iOS) | macOS only: cloud save through Apple's NSURLSession instead of `libcurl`, e.g. to run `cloudsync-test` against it. |
+| `IOS_UPDATE_REPOSITORY` | empty | iOS only: the GitHub repository (`owner/name`) whose releases the app looks at for updates. The CI sets it to the repository it builds. |
 | `CLOUD_SAVE_GOOGLE_CLIENT_ID`<br>`CLOUD_SAVE_GOOGLE_CLIENT_SECRET` | the client of this project | ID and secret of a Google OAuth client of the type **Desktop app**, built into the game so players can sign in to Google Drive without [their own client](#google-cloud-client). Give both or neither. |
 | `CLOUD_SAVE_ONEDRIVE_CLIENT_ID` | empty | ID of a Microsoft app registration with the redirect URI `http://localhost` under **Mobile and desktop applications**, built into the game so players can sign in to OneDrive without [their own registration](#microsoft-app-registration). |
 | `CLOUD_SAVE_TESTS` | `OFF` | Also build `cloudsync-test`, offline tests of the cloud save against simulated WebDAV, Google Drive and OneDrive servers. |

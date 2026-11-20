@@ -7,6 +7,7 @@
 #ifdef PVZP_CLOUD_SAVE
 
 #include "CloudSave.h"
+#include "CloudBackgroundTask.h"
 #include "CloudSync.h"
 #include "PlayerInfo.h"
 #include "ProfileMgr.h"
@@ -81,10 +82,28 @@ fs::path DataDir()
 	return Sexy::PathFromU8(Sexy::GetAppDataPath("userdata"));
 }
 
+// Where cloudsave.ini and the state below go. On iOS the app data folder is the Documents folder, which the Files app
+// shows and copies around, so the WebDAV password and the sign-ins go to the hidden Application Support folder.
+fs::path PrivatePath(std::string_view theName)
+{
+#ifdef __IPHONEOS__
+	static const std::string aPrivate = []()
+	{
+		char* aPath = SDL_GetPrefPath("io.github.wszqkzqk", "PvZPortable");
+		std::string aFolder = aPath != nullptr ? aPath : std::string();
+		SDL_free(aPath);
+		return aFolder;
+	}();
+	if (!aPrivate.empty())
+		return Sexy::PathFromU8(aPrivate) / Sexy::PathFromU8(std::string(theName));
+#endif
+	return Sexy::PathFromU8(Sexy::GetAppDataPath(theName));
+}
+
 // sync state, sign-ins and backups
 fs::path StateDir()
 {
-	return Sexy::PathFromU8(Sexy::GetAppDataPath("."));
+	return PrivatePath(".");
 }
 
 std::string DeviceName()
@@ -212,6 +231,7 @@ void StartWorker()
 	{
 		gWorkerResult = gEngine->Sync(aSnapshot, aSummary, false);
 		gWorkerDone = true;
+		CloudBackgroundTask::End();		// the upload EnterBackground() asked iOS for time for, if any
 	});
 }
 
@@ -280,7 +300,7 @@ void AskAboutConflict()
 
 fs::path ConfigPath()
 {
-	return Sexy::PathFromU8(Sexy::GetAppDataPath("cloudsave.ini"));
+	return PrivatePath("cloudsave.ini");
 }
 
 // The sign-in to the service of theConfig that theConfig can use: one made with the client ID it names.
@@ -451,6 +471,33 @@ void Update()
 	}
 }
 
+void EnterBackground()
+{
+	if (!gEngine || gPending != Pending::NONE)
+		return;
+	// a worker already running finishes in the time asked for here, and ends it
+	CloudBackgroundTask::Begin();
+	if (gWorker)
+		return;
+	if (Signature() == gSyncedSignature)
+	{
+		CloudBackgroundTask::End();
+		return;
+	}
+	StartWorker();		// uploads what changed since the last sync; a pull waits for the game to be back in front
+}
+
+void EnterForeground()
+{
+	if (!gEngine)
+		return;
+	// another device may have saved while the game was away: look at the cloud now, not in up to five minutes
+	Clock::time_point aNow = Clock::now();
+	gNextCheck = aNow;
+	gRetryAt = aNow;
+	gNextRemoteCheck = aNow;
+}
+
 void ResolveConflict(bool theUseCloud)
 {
 	gLawnApp->KillDialog(Dialogs::DIALOG_CLOUD_SAVE_CONFLICT);
@@ -587,7 +634,7 @@ bool StartSignIn(CloudSync::Provider theProvider)
 	gSignInThread = new std::thread([aSignIn, aStateDir = StateDir(), theProvider]()
 	{
 		// Stop also gives up a request on its way, so the thread is joined within a second
-		std::unique_ptr<CloudSync::Transport> aHttp = CloudSync::MakeCurlTransport([]() { return gSignInCancel.load(); });
+		std::unique_ptr<CloudSync::Transport> aHttp = CloudSync::MakeHttpTransport([]() { return gSignInCancel.load(); });
 		CloudSync::Token aToken;
 		std::string anError;
 		CloudSync::Result aResult = aSignIn->Finish(*aHttp,

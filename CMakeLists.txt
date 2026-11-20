@@ -120,16 +120,25 @@ endif()
 option(PVZ_DEBUG "Enable PVZ_DEBUG macro to enable cheats, hidden features, etc." ${PVZ_DEBUG_DEFAULT})
 option(CONSOLE "Show console on Windows" ${WIN_CONSOLE_DEFAULT})
 option(DO_FIX_BUGS "Define DO_FIX_BUGS macro (Community fixes for original game bugs of 1.2.0.1073 GOTY Edition)" OFF)
-# Cloud save (WebDAV, Google Drive, OneDrive) needs libcurl and is only built for desktop systems so far. WebAssembly
-# is left out because most WebDAV servers refuse the browser's cross-origin requests; Switch, Android and iOS have no
-# libcurl set up here. BUILD_STATIC builds would pick up a shared system libcurl (and its TLS stack), so they leave it
-# out too.
-if(NINTENDO_SWITCH OR ANDROID OR IOS OR EMSCRIPTEN OR BUILD_STATIC)
+# Cloud save (WebDAV, Google Drive, OneDrive) needs an HTTP client: libcurl on desktop systems, NSURLSession on iOS
+# (CLOUD_SAVE_APPLE_HTTP). WebAssembly is left out because most WebDAV servers refuse the browser's cross-origin
+# requests; Switch and Android have no libcurl set up here. BUILD_STATIC builds would pick up a shared system libcurl
+# (and its TLS stack), so they leave it out too.
+if(NINTENDO_SWITCH OR ANDROID OR EMSCRIPTEN OR BUILD_STATIC)
 	set(CLOUD_SAVE_DEFAULT OFF)
 else()
 	set(CLOUD_SAVE_DEFAULT ON)
 endif()
-option(CLOUD_SAVE "Enable cloud save to WebDAV, Google Drive and OneDrive (needs libcurl)" ${CLOUD_SAVE_DEFAULT})
+option(CLOUD_SAVE "Enable cloud save to WebDAV, Google Drive and OneDrive (needs libcurl, or Apple's NSURLSession)" ${CLOUD_SAVE_DEFAULT})
+# iOS has no libcurl but its own HTTP client, which also checks certificates against the system's trust store. A Mac
+# build can use it too, e.g. to run cloudsync-test against it.
+if(IOS)
+	set(CLOUD_SAVE_APPLE_HTTP ON)
+elseif(APPLE)
+	option(CLOUD_SAVE_APPLE_HTTP "Cloud save through NSURLSession instead of libcurl" OFF)
+else()
+	set(CLOUD_SAVE_APPLE_HTTP OFF)
+endif()
 # Google Drive and OneDrive sign in through an OAuth app registered by whoever ships the build. Without these, players
 # enter the client of their own app in the cloud save settings (see the README).
 # The Google client of this project is built in by default. For a Desktop app client Google does not treat the secret as
@@ -150,7 +159,7 @@ else()
 	find_package(ZLIB REQUIRED)
 	find_package(JPEG REQUIRED)
 	find_package(PNG REQUIRED)
-	if(CLOUD_SAVE)
+	if(CLOUD_SAVE AND NOT CLOUD_SAVE_APPLE_HTTP)
 		find_package(CURL)
 		if(NOT CURL_FOUND)
 			message(STATUS "libcurl not found, building without cloud save")
@@ -209,7 +218,7 @@ target_link_libraries(pvz-portable PRIVATE
 	${OPENMPT_LIB}
 )
 
-if(CLOUD_SAVE AND CURL_FOUND)
+if(CLOUD_SAVE AND (CURL_FOUND OR CLOUD_SAVE_APPLE_HTTP))
 	set(_cloud_save_definitions PVZP_CLOUD_SAVE)
 	# Google signs a Desktop app client in with its secret, and the secret belongs to that one client
 	if(NOT "${CLOUD_SAVE_GOOGLE_CLIENT_ID}" STREQUAL "" AND "${CLOUD_SAVE_GOOGLE_CLIENT_SECRET}" STREQUAL "")
@@ -226,8 +235,23 @@ if(CLOUD_SAVE AND CURL_FOUND)
 			list(APPEND _cloud_save_definitions "PVZP_${_client}=\"${CLOUD_SAVE_${_client}}\"")
 		endif()
 	endforeach()
+	if(CLOUD_SAVE_APPLE_HTTP)
+		enable_language(OBJCXX)
+		set(_cloud_save_apple_sources src/Lawn/System/CloudHttpApple.mm)
+		list(APPEND _cloud_save_definitions PVZP_CLOUD_HTTP_APPLE)
+		if(IOS)
+			# the sign-in page in the system's sign-in sheet, and time to upload in the background
+			list(APPEND _cloud_save_apple_sources src/Lawn/System/CloudSignInSheet.mm src/Lawn/System/CloudBackgroundTask.mm)
+			list(APPEND _cloud_save_definitions PVZP_CLOUD_SIGN_IN_SHEET)
+			target_link_libraries(pvz-portable PRIVATE "-framework AuthenticationServices")
+		endif()
+		set_source_files_properties(${_cloud_save_apple_sources} PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+		target_sources(pvz-portable PRIVATE ${_cloud_save_apple_sources})
+		target_link_libraries(pvz-portable PRIVATE "-framework Foundation")
+	else()
+		target_link_libraries(pvz-portable PRIVATE CURL::libcurl)
+	endif()
 	target_compile_definitions(pvz-portable PRIVATE ${_cloud_save_definitions})
-	target_link_libraries(pvz-portable PRIVATE CURL::libcurl)
 	if(HAIKU)
 		target_link_libraries(pvz-portable PRIVATE network)	# the sockets the browser sign-in listens on
 	endif()
@@ -238,7 +262,14 @@ if(CLOUD_SAVE AND CURL_FOUND)
 		target_include_directories(cloudsync-test PRIVATE src/Lawn/System)
 		target_compile_features(cloudsync-test PRIVATE cxx_std_20)
 		target_compile_definitions(cloudsync-test PRIVATE PVZP_CLOUD_SAVE)
-		target_link_libraries(cloudsync-test PRIVATE CURL::libcurl Threads::Threads)
+		target_link_libraries(cloudsync-test PRIVATE Threads::Threads)
+		if(CLOUD_SAVE_APPLE_HTTP)
+			target_sources(cloudsync-test PRIVATE src/Lawn/System/CloudHttpApple.mm)
+			target_compile_definitions(cloudsync-test PRIVATE PVZP_CLOUD_HTTP_APPLE)
+			target_link_libraries(cloudsync-test PRIVATE "-framework Foundation")
+		else()
+			target_link_libraries(cloudsync-test PRIVATE CURL::libcurl)
+		endif()
 		if(WIN32)
 			target_link_libraries(cloudsync-test PRIVATE ws2_32)
 		elseif(HAIKU)
@@ -248,7 +279,7 @@ if(CLOUD_SAVE AND CURL_FOUND)
 endif()
 
 # The Mac app updates itself through Sparkle, which the app made by macos/build-app.sh carries and the game loads at run
-# time (see src/Lawn/System/MacUpdater.h), so building needs no Sparkle.
+# time (see src/Lawn/System/AppUpdater.h), so building needs no Sparkle.
 if(APPLE AND NOT IOS)
 	option(MAC_UPDATER "Let the Mac app update itself through Sparkle" ON)
 else()
@@ -259,6 +290,26 @@ if(MAC_UPDATER)
 	target_sources(pvz-portable PRIVATE src/Lawn/System/MacUpdater.mm)
 	target_compile_definitions(pvz-portable PRIVATE PVZP_MAC_UPDATER)
 	target_link_libraries(pvz-portable PRIVATE "-framework Foundation")
+endif()
+
+# The iOS app looks for updates in the AltStore source of the releases of IOS_UPDATE_REPOSITORY ("owner/name" on GitHub,
+# set by the CI from the repository it builds), and points to AltStore or SideStore for them (src/Lawn/System/AppUpdater.h).
+if(IOS)
+	set(IOS_UPDATE_REPOSITORY "" CACHE STRING "GitHub repository (owner/name) whose releases the iOS app takes updates from")
+	if(NOT "${IOS_UPDATE_REPOSITORY}" STREQUAL "")
+		if(NOT "${IOS_UPDATE_REPOSITORY}" MATCHES "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+			message(FATAL_ERROR "IOS_UPDATE_REPOSITORY must be owner/name")
+		endif()
+		set(PVZP_UPDATE_SOURCE_URL "https://github.com/${IOS_UPDATE_REPOSITORY}/releases/latest/download/altstore-source.json")
+		set(PVZP_RELEASE_PAGE_URL "https://github.com/${IOS_UPDATE_REPOSITORY}/releases/latest")
+	else()
+		set(PVZP_UPDATE_SOURCE_URL "")
+		set(PVZP_RELEASE_PAGE_URL "")
+	endif()
+	enable_language(OBJCXX)
+	set_source_files_properties(src/Lawn/System/IosUpdater.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+	target_sources(pvz-portable PRIVATE src/Lawn/System/IosUpdater.mm)
+	target_compile_definitions(pvz-portable PRIVATE PVZP_IOS_UPDATER)
 endif()
 
 if(EMSCRIPTEN)
@@ -332,6 +383,8 @@ elseif (ANDROID)
 	target_link_libraries(pvz-portable PRIVATE GLESv2 EGL android log)
 	set_target_properties(pvz-portable PROPERTIES OUTPUT_NAME "main")
 elseif (IOS)
+	# SDL2 defined __IPHONEOS__, which the game's iOS code still checks; SDL3 names it SDL_PLATFORM_IOS
+	target_compile_definitions(pvz-portable PRIVATE __IPHONEOS__=1)
 	target_link_libraries(pvz-portable PRIVATE
 		"-framework Foundation"
 		"-framework UIKit"

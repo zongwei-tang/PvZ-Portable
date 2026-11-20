@@ -2249,14 +2249,14 @@ void TestCurlStop()
 	std::string aBase = std::format("http://127.0.0.1:{}", aListener->Port());
 	HttpRequest aRequest;
 	aRequest.mUrl = aBase + "/x";
-	HttpResponse aResponse = MakeCurlTransport([] { return false; })->Request(aRequest);
+	HttpResponse aResponse = MakeHttpTransport([] { return false; })->Request(aRequest);
 	CHECK_EQ(aResponse.mStatus, 404L);		// it does reach the listener
 	CHECK_EQ(aResponse.mError, "");
 
 	auto aStart = std::chrono::steady_clock::now();
 	auto aStop = [&] { return std::chrono::steady_clock::now() - aStart >= std::chrono::milliseconds(300); };
 	aRequest.mUrl = std::format("{}/?state={}&code=c", aBase, STATE);
-	aResponse = MakeCurlTransport(aStop)->Request(aRequest);
+	aResponse = MakeHttpTransport(aStop)->Request(aRequest);
 	auto aTook = std::chrono::steady_clock::now() - aStart;
 	CHECK_EQ(aResponse.mStatus, 0L);
 	CHECK_EQ(aResponse.mError, "stopped");

@@ -13,7 +13,7 @@
 #endif
 
 // Keeps userdata/ in sync with the cloud folder configured in cloudsave.ini: WebDAV, Google Drive or OneDrive
-// (see CloudSync.h for the protocol). Builds without libcurl (PVZP_CLOUD_SAVE undefined) get no-op stubs.
+// (see CloudSync.h for the protocol). Builds without cloud save (PVZP_CLOUD_SAVE undefined) get no-op stubs.
 namespace CloudSave
 {
 
@@ -22,6 +22,10 @@ void	Init();						// before the profiles are loaded: pulls a newer cloud save, o
 void	Update();					// every frame: uploads changed saves in the background, asks about conflicts on the main menu
 void	Shutdown();					// after the last saves were written: uploads them before the game exits
 void	ResolveConflict(bool theUseCloud);
+// For systems that stop a program in the background (iOS): uploads what changed in the time iOS still gives, and
+// looks at the cloud again once the game is back in front.
+void	EnterBackground();
+void	EnterForeground();
 
 // For the settings dialog, which is only offered on the main menu, where files may be swapped.
 CloudSync::Config	GetSettings();
@@ -62,6 +66,8 @@ inline void	Init() {}
 inline void	Update() {}
 inline void	Shutdown() {}
 inline void	ResolveConflict(bool) {}
+inline void	EnterBackground() {}
+inline void	EnterForeground() {}
 #endif
 
 }

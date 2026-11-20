@@ -27,7 +27,9 @@
 #include <regex>
 #include <sstream>
 #include <system_error>
+#ifndef PVZP_CLOUD_HTTP_APPLE
 #include <curl/curl.h>
+#endif
 
 // OAuth clients this build signs in with; cloudsave.ini can name others (see CMakeLists.txt and the README)
 #ifndef PVZP_GOOGLE_CLIENT_ID
@@ -460,12 +462,14 @@ const char* ResultName(Result theResult)
 
 void GlobalInit()
 {
+#ifndef PVZP_CLOUD_HTTP_APPLE
 	static bool aDone = false;
 	if (!aDone)
 	{
 		curl_global_init(CURL_GLOBAL_DEFAULT);
 		aDone = true;
 	}
+#endif
 }
 
 Result Store::Fail(Result theResult, std::string theError)
@@ -477,6 +481,7 @@ Result Store::Fail(Result theResult, std::string theError)
 namespace
 {
 
+#ifndef PVZP_CLOUD_HTTP_APPLE
 class CurlTransport : public Transport
 {
 	CURL*					mCurl = nullptr;
@@ -604,6 +609,7 @@ public:
 		return aResponse;
 	}
 };
+#endif
 
 // <url>/<folder>/, with basic authentication and If-Match on the manifest.
 class WebDavStore : public Store
@@ -711,10 +717,12 @@ public:
 
 }
 
-std::unique_ptr<Transport> MakeCurlTransport(std::function<bool()> theStop)
+#ifndef PVZP_CLOUD_HTTP_APPLE
+std::unique_ptr<Transport> MakeHttpTransport(std::function<bool()> theStop)
 {
 	return std::make_unique<CurlTransport>(std::move(theStop));
 }
+#endif
 
 std::unique_ptr<Store> MakeWebDavStore(const Config& theConfig, std::unique_ptr<Transport> theTransport)
 {
@@ -724,7 +732,7 @@ std::unique_ptr<Store> MakeWebDavStore(const Config& theConfig, std::unique_ptr<
 std::unique_ptr<Store> MakeStore(const Config& theConfig, const fs::path& theStateDir, std::unique_ptr<Transport> theTransport)
 {
 	if (!theTransport)
-		theTransport = MakeCurlTransport();
+		theTransport = MakeHttpTransport();
 	switch (theConfig.mProvider)
 	{
 	case Provider::GOOGLE_DRIVE:	return MakeGoogleDriveStore(theConfig, theStateDir, std::move(theTransport));

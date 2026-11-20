@@ -24,7 +24,7 @@
 #include "../Cutscene.h"
 #include "AlmanacDialog.h"
 #include "CloudSaveDialog.h"
-#include "../System/MacUpdater.h"
+#include "../System/AppUpdater.h"
 #include "../LawnCommon.h"
 #include "../../LawnApp.h"
 #include "../System/Music.h"
@@ -54,7 +54,7 @@ NewOptionsDialog::NewOptionsDialog(LawnApp* theApp, bool theFromGameSelector) :
 	mCloudSaveButton->SetVisible(false);
 #endif
 	mUpdateButton = MakeButton(NewOptionsDialog::NewOptionsDialog_Update, this, "Check Updates");
-	mUpdateButton->SetVisible(theFromGameSelector && MacUpdater::Available());
+	mUpdateButton->SetVisible(theFromGameSelector && AppUpdater::Available());
 
 	mBackToGameButton = MakeNewButton(
 		Dialog::ID_OK,
