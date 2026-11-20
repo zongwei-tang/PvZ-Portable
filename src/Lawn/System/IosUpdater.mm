@@ -156,7 +156,7 @@ void Check(bool theQuiet)
 			NSString* aName = [aVersion isKindOfClass:[NSString class]] ? aVersion : @"?";
 			if (aBuild > aHaveBuild)
 				Show(@"Update Available", [NSString stringWithFormat:@"Version %@ (build %lld) is out, this is %@ (build %lld).\n\n"
-					"Open AltStore or SideStore and tap Update next to PvZ Portable. Your saves stay.", aName, aBuild, aHave, aHaveBuild], true);
+					"Open AltStore or SideStore and tap Update next to Plants vs. Zombies. Your saves stay.", aName, aBuild, aHave, aHaveBuild], true);
 			else if (!theQuiet)
 				Show(@"Check Updates", [NSString stringWithFormat:@"This is the newest version, %@ (build %lld).", aHave, aHaveBuild], false);
 		});

@@ -1,5 +1,5 @@
 [Desktop Entry]
-Name=PvZ Portable
+Name=Plants vs. Zombies
 Comment=Community reimplementation of Plants vs. Zombies GOTY — 100% authentic PvZ experience
 Exec=/usr/bin/pvz-portable
 Icon=io.github.wszqkzqk.pvz-portable

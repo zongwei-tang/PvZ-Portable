@@ -159,19 +159,15 @@ dylibbundler -of -cd -b -x "$MACOS/pvz-portable" -d "$MACOS/libs" -p @executable
 # Sparkle keeps the signature of its makers; the game loads it at run time from here
 ditto "$SPARKLE/Sparkle.framework" "$STAGE/Contents/Frameworks/Sparkle.framework"
 
-# icon: the one of the installed app, else made from icon.png
-if [ -f "$INSTALLED/Contents/Resources/AppIcon.icns" ]; then
-	cp "$INSTALLED/Contents/Resources/AppIcon.icns" "$STAGE/Contents/Resources/AppIcon.icns"
-else
-	ICONSET="$BUILD/AppIcon.iconset"
-	rm -rf "$ICONSET"
-	mkdir -p "$ICONSET"
-	for size in 16 32 128 256 512; do
-		sips -z $size $size "$ROOT/icon.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
-		sips -z $((size * 2)) $((size * 2)) "$ROOT/icon.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
-	done
-	iconutil -c icns "$ICONSET" -o "$STAGE/Contents/Resources/AppIcon.icns"
-fi
+# icon: made from icon.png, the icon of every version of the game, so a local build looks like the release
+ICONSET="$BUILD/AppIcon.iconset"
+rm -rf "$ICONSET"
+mkdir -p "$ICONSET"
+for size in 16 32 128 256 512; do
+	sips -z $size $size "$ROOT/icon.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+	sips -z $((size * 2)) $((size * 2)) "$ROOT/icon.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$STAGE/Contents/Resources/AppIcon.icns"
 
 # Sparkle offers an update when the release has a higher CFBundleVersion: the number of commits only goes up
 BUILD_NUMBER="$(git -C "$ROOT" rev-list --count HEAD)"

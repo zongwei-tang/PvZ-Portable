@@ -370,7 +370,7 @@ elseif (NINTENDO_SWITCH)
 	target_link_libraries(pvz-portable PRIVATE GLESv2 EGL glapi drm_nouveau)
 
 	nx_generate_nacp(pvz-portable.nacp
-		NAME "PvZ Portable"
+		NAME "Plants vs. Zombies"
 		AUTHOR "wszqkzqk, etc., a community-driven port"
 		VERSION "${PVZP_VERSION_PLAIN}"
 	)
@@ -402,7 +402,7 @@ elseif (IOS)
 	set_target_properties(pvz-portable PROPERTIES
 		MACOSX_BUNDLE TRUE
 		MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.wszqkzqk.pvz-portable"
-		MACOSX_BUNDLE_BUNDLE_NAME "PvZ Portable"
+		MACOSX_BUNDLE_BUNDLE_NAME "Plants vs. Zombies"
 		MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist"
 		XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
 		XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "16.4"
@@ -418,10 +418,27 @@ elseif (IOS)
 			PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 	endif()
 
-	# Add asset catalog (app icon)
-	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ios/Assets.xcassets")
-		target_sources(pvz-portable PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ios/Assets.xcassets")
-		set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/ios/Assets.xcassets"
-			PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+	# The app icon, made from icon.png like that of every other version: an asset catalog in the build folder with the
+	# image drawn onto an opaque 1024x1024 square (ios/flatten-icon.swift; sips alone, keeping transparency, without
+	# Swift)
+	set(_ios_icon_catalog "${CMAKE_CURRENT_BINARY_DIR}/AppIcon.xcassets")
+	set(_ios_icon "${_ios_icon_catalog}/AppIcon.appiconset/AppIcon.png")
+	file(MAKE_DIRECTORY "${_ios_icon_catalog}/AppIcon.appiconset")
+	file(WRITE "${_ios_icon_catalog}/Contents.json" "{\"info\":{\"author\":\"xcode\",\"version\":1}}\n")
+	file(WRITE "${_ios_icon_catalog}/AppIcon.appiconset/Contents.json"
+		"{\"images\":[{\"filename\":\"AppIcon.png\",\"idiom\":\"universal\",\"platform\":\"ios\",\"size\":\"1024x1024\"}],"
+		"\"info\":{\"author\":\"xcode\",\"version\":1}}\n")
+	execute_process(COMMAND xcrun swift "${CMAKE_CURRENT_SOURCE_DIR}/ios/flatten-icon.swift" "${CMAKE_CURRENT_SOURCE_DIR}/icon.png"
+		"${_ios_icon}" RESULT_VARIABLE _ios_icon_result OUTPUT_QUIET ERROR_QUIET)
+	if(NOT _ios_icon_result EQUAL 0)
+		execute_process(COMMAND sips -s format png -z 1024 1024 "${CMAKE_CURRENT_SOURCE_DIR}/icon.png" --out "${_ios_icon}"
+			RESULT_VARIABLE _ios_icon_result OUTPUT_QUIET ERROR_QUIET)
 	endif()
+	if(NOT _ios_icon_result EQUAL 0)
+		message(FATAL_ERROR "Could not make the iOS app icon from icon.png")
+	endif()
+	set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+		"${CMAKE_CURRENT_SOURCE_DIR}/icon.png" "${CMAKE_CURRENT_SOURCE_DIR}/ios/flatten-icon.swift")
+	target_sources(pvz-portable PRIVATE "${_ios_icon_catalog}")
+	set_source_files_properties("${_ios_icon_catalog}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 endif()

@@ -675,6 +675,20 @@ bool SexyAppBase::ProcessDeferredMessages(bool singleMessage)
 				mWidgetManager->MouseWheel(event.wheel.integer_y);
 				break;
 
+#if (defined(__ANDROID__) && !defined(__TERMUX__)) || defined(__IPHONEOS__)
+			// Phones and tablets have no key for the trainer panel: a tap with three fingers at once opens and closes
+			// it. The panel toggles as the third finger comes down, so a gesture toggles it once.
+			case SDL_EVENT_FINGER_DOWN:
+			{
+				int aFingerCount = 0;
+				SDL_Finger** aFingers = SDL_GetTouchFingers(event.tfinger.touchID, &aFingerCount);
+				SDL_free(aFingers);
+				if (aFingerCount == 3)
+					TrainerHotkey();
+				break;
+			}
+#endif
+
 			case SDL_EVENT_MOUSE_MOTION:
 			{
 				if (!mMouseIn)

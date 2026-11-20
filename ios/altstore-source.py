@@ -30,12 +30,12 @@ def main():
     # usage descriptions of its Info.plist
     privacy = {key: value for key, value in info.items() if key.startswith("NS") and key.endswith("UsageDescription")}
     app = {
-        "name": "PvZ Portable",
+        "name": "Plants vs. Zombies",
         "bundleIdentifier": info["CFBundleIdentifier"],
         "developerName": "PvZ-Portable contributors",
         "subtitle": "The game on iOS, with cloud save",
         "localizedDescription": "Needs main.pak and properties/ from your own copy of the game: copy them into the "
-                                "PvZ Portable folder in the Files app.",
+                                "Plants vs. Zombies folder in the Files app.",
         "versions": [{
             "version": info["CFBundleShortVersionString"],
             "buildVersion": str(info["CFBundleVersion"]),

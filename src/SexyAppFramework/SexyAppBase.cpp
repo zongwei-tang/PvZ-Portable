@@ -3002,7 +3002,7 @@ void SexyAppBase::ShowResourceError(bool doExit)
 	}
 	std::string aMessage =
 		"Please place main.pak and the properties/ folder into the "
-		"PvZ Portable folder using the Files app or Finder/iTunes file sharing.";
+		"Plants vs. Zombies folder using the Files app or Finder/iTunes file sharing.";
 	if (!aError.empty())
 		aMessage += "\n\n(" + aError + ")";
 #else
