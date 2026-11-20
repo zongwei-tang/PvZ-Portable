@@ -6,6 +6,16 @@
 
 #ifdef PVZP_CLOUD_SAVE
 
+// curl.h pulls in windows.h on Windows; without these its min and max macros break std::min and std::max below
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
+
 #include "CloudSync.h"
 #include <algorithm>
 #include <cctype>

@@ -3,7 +3,7 @@ name: CI build
 on:
   push:
     branches: [ "main" ]
-    tags: [ "*" ]
+    # no tags: in this fork a tag releases the Mac app (mac-release.yml); upstream's release, AUR and Pages jobs stay off
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
