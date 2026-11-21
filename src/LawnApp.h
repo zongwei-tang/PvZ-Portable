@@ -167,6 +167,7 @@ public:
 	// The phone layout of a level on a wide phone screen (Lawn/System/PhoneLayout.h), an option on phones
 	bool							mPhoneLayout = true;
 	bool							PhoneLayoutApplies();
+	const char*						mPhoneLayoutOff = "";	// why PhoneLayoutApplies() last said no
 	void							UpdatePhoneLayout();
 	void							DoUserDialog();
 	void							FinishUserDialog(bool isYes);

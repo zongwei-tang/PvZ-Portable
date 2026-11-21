@@ -177,11 +177,13 @@ public:
 };
 
 // A piece of the logical screen and where in the window it is shown (SetPresentationTiles): mSource in logical
-// coordinates, mDest in window points.
+// coordinates, mDest in window points. With mImage, a piece of that image instead (mSource in its pixels), such as the
+// backdrop of a level around the lawn: no tap goes to it.
 struct PresentationTile
 {
 	FRect					mSource;
 	FRect					mDest;
+	MemoryImage*			mImage = nullptr;
 };
 
 class GLInterface : public NativeDisplay
@@ -241,11 +243,32 @@ public:
 
 	// Tiled presentation: with tiles, a frame is drawn into a texture of the logical screen, and Flush() shows the tiles
 	// of it in the window instead of the letterboxed screen (the phone layout of a level). New tiles take effect with the
-	// next frame; none goes back to the letterboxed screen. MapWindowToLogical maps a window point through the tiles on
-	// screen: false without tiles, and a point under no tile maps far outside the logical screen.
+	// next frame; none goes back to the letterboxed screen. Tiles are drawn in their order. MapWindowToLogical maps a
+	// window point through the topmost tile of the logical screen under it: false without tiles, and a point under none
+	// maps far outside the logical screen.
 	void					SetPresentationTiles(std::vector<PresentationTile> theTiles);
 	bool					MapWindowToLogical(double& theX, double& theY) const;
 	bool					IsTiled() const { return !mTiles.empty(); }
+	const std::vector<PresentationTile>& GetPresentationTiles() const { return mTiles; }
+
+#ifdef PVZP_PHONE_LAYOUT_SELFTEST
+	// The next Flush() reads back what it shows (tests/phone_layout_selftest.sh): the texture of the logical screen when
+	// tiled, and the window as it goes to the screen. RGBA rows, bottom up, as glReadPixels gives them.
+	struct FrameCapture
+	{
+		bool						mRequested = false;
+		bool						mDone = false;
+		bool						mTiled = false;
+		int							mLogicalWidth = 0, mLogicalHeight = 0;
+		std::vector<unsigned char>	mLogical;
+		int							mWindowWidth = 0, mWindowHeight = 0;	// pixels
+		int							mPointWidth = 0, mPointHeight = 0;		// points
+		std::vector<unsigned char>	mWindow;
+		std::vector<PresentationTile> mTiles;
+		int							mLetterboxX = 0, mLetterboxY = 0, mLetterboxWidth = 0, mLetterboxHeight = 0;
+	};
+	FrameCapture			mCapture;
+#endif
 
 private:
 	std::vector<PresentationTile>	mTiles;			// those of the frame being drawn and of the window now
@@ -258,6 +281,7 @@ private:
 	int						mTileTextureHeight = 0;
 	int						mLetterboxX = 0, mLetterboxY = 0, mLetterboxWidth = 0, mLetterboxHeight = 0;
 
+	unsigned int			WindowFramebuffer();
 	bool					EnsureTileTarget();
 	void					BindFrameTarget(bool theClear);
 	void					PresentTiles();

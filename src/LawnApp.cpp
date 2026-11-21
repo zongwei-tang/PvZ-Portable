@@ -49,6 +49,9 @@
 #include "Lawn/Widget/GameButton.h"
 #include "Lawn/SeedPacket.h"
 #include "graphics/GLInterface.h"
+#ifdef PVZP_PHONE_LAYOUT_SELFTEST
+#include "Lawn/System/PhoneLayoutSelfTest.h"
+#endif
 #include <SDL3/SDL.h>
 #include <cstdlib>
 #include "PvzpLib/Reanimator.h"
@@ -1368,25 +1371,32 @@ bool LawnApp::PhoneLayoutApplies()
 {
 #if defined(__IPHONEOS__) || (defined(__ANDROID__) && !defined(__TERMUX__))
 	if (!mPhoneLayout)
-		return false;
+		return (mPhoneLayoutOff = "option off", false);
 #else
 	static const bool anEnabled = []() { const char* aValue = std::getenv("PVZP_PHONE_LAYOUT"); return aValue != nullptr && aValue[0] == '1'; }();
 	if (!anEnabled)
-		return false;
+		return (mPhoneLayoutOff = "not a phone", false);
 #endif
-	if (mBoard == nullptr || !mBoard->mSeedBank || !mLoadingThreadCompleted || mGameScene != GameScenes::SCENE_PLAYING)
-		return false;
-	if (GetDialogCount() > 0 || (mTrainerPanel && mTrainerPanel->mOpen))
-		return false;
+	if (mBoard == nullptr || !mBoard->mSeedBank || !mLoadingThreadCompleted)
+		return (mPhoneLayoutOff = "no board", false);
+	if (mGameScene != GameScenes::SCENE_PLAYING)
+		return (mPhoneLayoutOff = "not playing", false);
+	if (GetDialogCount() > 0)
+		return (mPhoneLayoutOff = "dialog", false);
+	if (mTrainerPanel && mTrainerPanel->mOpen)
+		return (mPhoneLayoutOff = "trainer", false);
 	if (mBoard->HasConveyorBeltSeedBank() || IsSlotMachineLevel() || IsChallengeWithoutSeedBank() || IsScaryPotterLevel() || IsWhackAZombieLevel())
-		return false;
+		return (mPhoneLayoutOff = "level of its own", false);
 	if (mGameMode == GameMode::GAMEMODE_CHALLENGE_ZEN_GARDEN || mGameMode == GameMode::GAMEMODE_TREE_OF_WISDOM ||
 		mGameMode == GameMode::GAMEMODE_CHALLENGE_LAST_STAND || mGameMode == GameMode::GAMEMODE_CHALLENGE_BEGHOULED ||
 		mGameMode == GameMode::GAMEMODE_CHALLENGE_BEGHOULED_TWIST)
-		return false;
+		return (mPhoneLayoutOff = "level of its own", false);
 	// the bank where a level keeps it, and the board not panned (as in cutscenes)
-	if (mBoard->mX != 0 || mBoard->mY != 0 || mBoard->mSeedBank->mY != 0)
-		return false;
+	if (mBoard->mX != 0 || mBoard->mY != 0)
+		return (mPhoneLayoutOff = "board moved", false);
+	if (mBoard->mSeedBank->mY != 0)
+		return (mPhoneLayoutOff = "bank moved", false);
+	mPhoneLayoutOff = "";
 	return true;
 }
 
@@ -1395,21 +1405,46 @@ void LawnApp::UpdatePhoneLayout()
 	if (!mGLInterface || !mWindow)
 		return;
 	std::vector<PresentationTile> aTiles;
+#ifdef PVZP_PHONE_LAYOUT_SELFTEST
+	if (PhoneLayoutApplies() && !PhoneLayoutSelfTest::SuppressTiles())
+#else
 	if (PhoneLayoutApplies())
+#endif
 	{
 		int aWindowWidth = 0, aWindowHeight = 0;
 		SDL_GetWindowSize(mWindow.get(), &aWindowWidth, &aWindowHeight);
 		SDL_Rect aSafe{ 0, 0, aWindowWidth, aWindowHeight };
 		if (!SDL_GetWindowSafeArea(mWindow.get(), &aSafe) || aSafe.w <= 0 || aSafe.h <= 0)
 			aSafe = SDL_Rect{ 0, 0, aWindowWidth, aWindowHeight };
+#ifdef PVZP_PHONE_LAYOUT_SELFTEST
+		PhoneLayoutSelfTest::SafeArea(aSafe);	// the notch of the phone it plays
+#endif
 
 		const SeedBank& aBank = *mBoard->mSeedBank;
 		PhoneLayout::Input anInput;
 		anInput.mScreenWidth = aWindowWidth;
 		anInput.mScreenHeight = aWindowHeight;
 		anInput.mSafeArea = PhoneLayout::Box{ static_cast<double>(aSafe.x), static_cast<double>(aSafe.y), static_cast<double>(aSafe.w), static_cast<double>(aSafe.h) };
-		// the lawn without the top strip, but with the heads of the zombies in the top row (they stand at about y 50)
-		anInput.mLawn = PhoneLayout::Box{ 0, 50, static_cast<double>(BOARD_WIDTH), static_cast<double>(BOARD_HEIGHT - 50) };
+		anInput.mLawn = PhoneLayout::Box{ 0, 0, static_cast<double>(BOARD_WIDTH), static_cast<double>(BOARD_HEIGHT) };
+
+		// the backdrop of the level, which the board draws BOARD_OFFSET left of the screen: the house left of the lawn and
+		// the street right of it
+		Image* aBackdropImage = nullptr;
+		switch (mBoard->mBackground)
+		{
+		case BackgroundType::BACKGROUND_1_DAY:		aBackdropImage = IMAGE_BACKGROUND1;			break;
+		case BackgroundType::BACKGROUND_2_NIGHT:	aBackdropImage = IMAGE_BACKGROUND2;			break;
+		case BackgroundType::BACKGROUND_3_POOL:		aBackdropImage = IMAGE_BACKGROUND3;			break;
+		case BackgroundType::BACKGROUND_4_FOG:		aBackdropImage = IMAGE_BACKGROUND4;			break;
+		case BackgroundType::BACKGROUND_5_ROOF:		aBackdropImage = IMAGE_BACKGROUND5;			break;
+		case BackgroundType::BACKGROUND_6_BOSS:		aBackdropImage = IMAGE_BACKGROUND6BOSS;		break;
+		default:									break;
+		}
+		if (mBoard->mBackground == BackgroundType::BACKGROUND_1_DAY && mBoard->mLevel <= 4 && IsFirstTimeAdventureMode())
+			aBackdropImage = IMAGE_BACKGROUND1UNSODDED;		// the lawn is still being sodded
+		MemoryImage* aBackdrop = dynamic_cast<MemoryImage*>(aBackdropImage);
+		if (aBackdrop != nullptr && aBackdrop->mWidth > 0 && aBackdrop->mHeight > 0)
+			anInput.mBackdrop = PhoneLayout::Box{ -static_cast<double>(BOARD_OFFSET), 0, static_cast<double>(aBackdrop->mWidth), static_cast<double>(aBackdrop->mHeight) };
 
 		double aFirstPacketX = aBank.mX + 83;
 		for (int i = 0; i < aBank.mNumPackets && i < SEEDBANK_MAX; i++)
@@ -1441,6 +1476,19 @@ void LawnApp::UpdatePhoneLayout()
 
 		for (const PhoneLayout::Tile& aTile : PhoneLayout::Compute(anInput))
 		{
+			if (aTile.mBackdrop)
+			{
+				// in the pixels of the image, whole ones, the window rectangle grown to match
+				double aScale = aTile.mDest.mWidth / aTile.mSource.mWidth;
+				double aLeft = std::floor(aTile.mSource.mX + BOARD_OFFSET), aTop = std::floor(aTile.mSource.mY);
+				double aRight = std::ceil(aTile.mSource.Right() + BOARD_OFFSET), aBottom = std::ceil(aTile.mSource.Bottom());
+				PresentationTile aPiece{ FRect(aLeft, aTop, aRight - aLeft, aBottom - aTop),
+					FRect(aTile.mDest.mX + (aLeft - BOARD_OFFSET - aTile.mSource.mX) * aScale, aTile.mDest.mY + (aTop - aTile.mSource.mY) * aScale,
+						(aRight - aLeft) * aScale, (aBottom - aTop) * aScale) };
+				aPiece.mImage = aBackdrop;
+				aTiles.push_back(aPiece);
+				continue;
+			}
 			aTiles.push_back(PresentationTile{ FRect(aTile.mSource.mX, aTile.mSource.mY, aTile.mSource.mWidth, aTile.mSource.mHeight),
 				FRect(aTile.mDest.mX, aTile.mDest.mY, aTile.mDest.mWidth, aTile.mDest.mHeight) });
 		}
@@ -1797,6 +1845,9 @@ void LawnApp::UpdateFrames()
 	}
 
 	CloudSave::Update();
+#ifdef PVZP_PHONE_LAYOUT_SELFTEST
+	PhoneLayoutSelfTest::Update(this);
+#endif
 	UpdatePhoneLayout();
 }
 

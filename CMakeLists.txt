@@ -286,6 +286,13 @@ if(PHONE_LAYOUT_TESTS)
 	target_compile_features(phone-layout-test PRIVATE cxx_std_20)
 endif()
 
+# A test of the phone layout in the running game (src/Lawn/System/PhoneLayoutSelfTest.h, tests/phone_layout_selftest.sh):
+# for test builds only
+option(PHONE_LAYOUT_SELFTEST "Build in the self-test of the phone layout, run by tests/phone_layout_selftest.sh" OFF)
+if(PHONE_LAYOUT_SELFTEST)
+	target_compile_definitions(pvz-portable PRIVATE PVZP_PHONE_LAYOUT_SELFTEST)
+endif()
+
 # The Mac app updates itself through Sparkle, which the app made by macos/build-app.sh carries and the game loads at run
 # time (see src/Lawn/System/AppUpdater.h), so building needs no Sparkle.
 if(APPLE AND NOT IOS)

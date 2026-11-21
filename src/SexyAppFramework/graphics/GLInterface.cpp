@@ -1376,8 +1376,42 @@ bool GLInterface::PreDraw()
 void GLInterface::Flush()
 {
 	GfxFlush();
+#ifdef PVZP_PHONE_LAYOUT_SELFTEST
+	bool aCapture = mCapture.mRequested;
+	if (aCapture)
+	{
+		mCapture = FrameCapture{};
+		mCapture.mTiled = !mTiles.empty() && mTileFramebuffer != 0;
+		mCapture.mTiles = mTiles;
+		mCapture.mLetterboxX = mLetterboxX;
+		mCapture.mLetterboxY = mLetterboxY;
+		mCapture.mLetterboxWidth = mLetterboxWidth;
+		mCapture.mLetterboxHeight = mLetterboxHeight;
+		if (mCapture.mTiled)
+		{
+			glBindFramebuffer(GL_FRAMEBUFFER, mTileFramebuffer);
+			mCapture.mLogicalWidth = mTileTextureWidth;
+			mCapture.mLogicalHeight = mTileTextureHeight;
+			mCapture.mLogical.resize(static_cast<size_t>(mTileTextureWidth) * mTileTextureHeight * 4);
+			glPixelStorei(GL_PACK_ALIGNMENT, 1);
+			glReadPixels(0, 0, mTileTextureWidth, mTileTextureHeight, GL_RGBA, GL_UNSIGNED_BYTE, mCapture.mLogical.data());
+		}
+	}
+#endif
 	if (!mTiles.empty())
 		PresentTiles();		// the frame was drawn into the texture: its tiles go to the window
+#ifdef PVZP_PHONE_LAYOUT_SELFTEST
+	if (aCapture)
+	{
+		glBindFramebuffer(GL_FRAMEBUFFER, WindowFramebuffer());
+		SDL_GetWindowSizeInPixels(mApp->mWindow.get(), &mCapture.mWindowWidth, &mCapture.mWindowHeight);
+		SDL_GetWindowSize(mApp->mWindow.get(), &mCapture.mPointWidth, &mCapture.mPointHeight);
+		mCapture.mWindow.resize(static_cast<size_t>(mCapture.mWindowWidth) * mCapture.mWindowHeight * 4);
+		glPixelStorei(GL_PACK_ALIGNMENT, 1);
+		glReadPixels(0, 0, mCapture.mWindowWidth, mCapture.mWindowHeight, GL_RGBA, GL_UNSIGNED_BYTE, mCapture.mWindow.data());
+		mCapture.mDone = true;
+	}
+#endif
 #ifdef __SWITCH__
 	eglSwapBuffers(mApp->mWindow, mApp->mSurface);
 #else
@@ -1411,9 +1445,12 @@ bool GLInterface::MapWindowToLogical(double& theX, double& theY) const
 {
 	if (mTiles.empty())
 		return false;
-	for (const PresentationTile& aTile : mTiles)
+	for (auto anItr = mTiles.rbegin(); anItr != mTiles.rend(); ++anItr)
 	{
+		const PresentationTile& aTile = *anItr;
 		const FRect& d = aTile.mDest;
+		if (aTile.mImage != nullptr)
+			continue;
 		if (theX < d.mX || theX >= d.mX + d.mWidth || theY < d.mY || theY >= d.mY + d.mHeight || d.mWidth <= 0 || d.mHeight <= 0)
 			continue;
 		theX = aTile.mSource.mX + (theX - d.mX) * aTile.mSource.mWidth / d.mWidth;
@@ -1442,7 +1479,7 @@ bool GLInterface::EnsureTileTarget()
 	double aScale = 1;
 	for (const PresentationTile& aTile : mTiles)
 	{
-		if (aTile.mSource.mWidth > 0)
+		if (aTile.mSource.mWidth > 0 && aTile.mImage == nullptr)
 			aScale = std::max(aScale, aTile.mDest.mWidth / aTile.mSource.mWidth * aPixelWidth / aWindowWidth);
 	}
 	aScale = std::min(aScale, 3.0);
@@ -1471,7 +1508,7 @@ bool GLInterface::EnsureTileTarget()
 	glBindFramebuffer(GL_FRAMEBUFFER, aFramebuffer);
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, aTexture, 0);
 	bool aComplete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
-	glBindFramebuffer(GL_FRAMEBUFFER, mWindowFramebuffer);
+	glBindFramebuffer(GL_FRAMEBUFFER, WindowFramebuffer());
 	gAppliedTextureValid = false;
 	if (!aComplete)
 	{
@@ -1503,6 +1540,22 @@ void GLInterface::ReleaseTileTarget()
 	gAppliedTextureValid = false;
 }
 
+// The window's framebuffer. SDL's UIKit view draws through one of its own and names it in a property of the window: on
+// iOS that one, rather than what was bound when the context was made.
+unsigned int GLInterface::WindowFramebuffer()
+{
+#ifdef __IPHONEOS__
+	if (mApp->mWindow)
+	{
+		Sint64 aFramebuffer = SDL_GetNumberProperty(SDL_GetWindowProperties(mApp->mWindow.get()),
+			SDL_PROP_WINDOW_UIKIT_OPENGL_FRAMEBUFFER_NUMBER, -1);
+		if (aFramebuffer >= 0)
+			return static_cast<unsigned int>(aFramebuffer);
+	}
+#endif
+	return mWindowFramebuffer;
+}
+
 // Where the frame is drawn: the texture of the tiles, or the letterbox of the window
 void GLInterface::BindFrameTarget(bool theClear)
 {
@@ -1513,7 +1566,7 @@ void GLInterface::BindFrameTarget(bool theClear)
 	}
 	else
 	{
-		glBindFramebuffer(GL_FRAMEBUFFER, mWindowFramebuffer);
+		glBindFramebuffer(GL_FRAMEBUFFER, WindowFramebuffer());
 		if (mLetterboxWidth > 0 && mLetterboxHeight > 0)	// none before the first UpdateViewport()
 			glViewport(mLetterboxX, mLetterboxY, mLetterboxWidth, mLetterboxHeight);
 	}
@@ -1537,7 +1590,7 @@ void GLInterface::PresentTiles()
 		return;
 
 	GfxFlush();
-	glBindFramebuffer(GL_FRAMEBUFFER, mWindowFramebuffer);
+	glBindFramebuffer(GL_FRAMEBUFFER, WindowFramebuffer());
 	glViewport(0, 0, aPixelWidth, aPixelHeight);
 	glClear(GL_COLOR_BUFFER_BIT);
 	float anOrtho[16];
@@ -1549,6 +1602,22 @@ void GLInterface::PresentTiles()
 	float aHalfTexelU = 0.5f / mTileTextureWidth, aHalfTexelV = 0.5f / mTileTextureHeight;
 	for (const PresentationTile& aTile : mTiles)
 	{
+		if (aTile.mImage != nullptr)
+		{
+			// an image still alive (one deleted has left mImageSet), its piece scaled into the tile
+			if (mImageSet.count(aTile.mImage) == 0 || aTile.mSource.mWidth <= 0 || aTile.mSource.mHeight <= 0)
+				continue;
+			GfxFlush();
+			gDrawState = GfxDrawState{};
+			SexyTransform2D aTransform;
+			aTransform.Scale(static_cast<float>(aTile.mDest.mWidth / aTile.mSource.mWidth), static_cast<float>(aTile.mDest.mHeight / aTile.mSource.mHeight));
+			aTransform.Translate(static_cast<float>(aTile.mDest.mX), static_cast<float>(aTile.mDest.mY));
+			Rect aSource(static_cast<int>(aTile.mSource.mX), static_cast<int>(aTile.mSource.mY), static_cast<int>(aTile.mSource.mWidth),
+				static_cast<int>(aTile.mSource.mHeight));
+			BltTransformed(aTile.mImage, nullptr, Color::White, Graphics::DRAWMODE_NORMAL, aSource, aTransform, true);
+			GfxFlush();
+			continue;
+		}
 		float u0 = static_cast<float>(aTile.mSource.mX / mWidth);
 		float u1 = static_cast<float>((aTile.mSource.mX + aTile.mSource.mWidth) / mWidth);
 		float vTop = 1.0f - static_cast<float>(aTile.mSource.mY / mHeight);
