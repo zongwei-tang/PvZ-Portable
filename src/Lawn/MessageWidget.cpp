@@ -360,6 +360,101 @@ _Font* MessageWidget::GetFont()
 	unreachable();
 }
 
+// Where and how the message is shown in its style: its middle (x) and baseline or band (y), the dark band behind it
+// across the screen (its height; 0 without one) and the text's offset in it, the least alpha it pulses to, its colour,
+// and whether it fades out at its end
+void MessageWidget::GetLayout(int& thePosX, int& thePosY, int& theTextOffsetY, int& theRectHeight, int& theMinAlpha, Color& theColor, bool& theFadeOut)
+{
+	switch (mMessageStyle)
+	{
+	case MessageStyle::MESSAGE_STYLE_TUTORIAL_LEVEL1:
+	case MessageStyle::MESSAGE_STYLE_TUTORIAL_LEVEL1_STAY:
+		thePosY = 400;
+		theRectHeight = 110;
+		theTextOffsetY = -4;
+		theColor = Color(253, 245, 173);
+		theMinAlpha = 192;
+		break;
+
+	case MessageStyle::MESSAGE_STYLE_TUTORIAL_LEVEL2:
+	case MessageStyle::MESSAGE_STYLE_TUTORIAL_LATER:
+	case MessageStyle::MESSAGE_STYLE_TUTORIAL_LATER_STAY:
+	case MessageStyle::MESSAGE_STYLE_HINT_TALL_FAST:
+	case MessageStyle::MESSAGE_STYLE_HINT_TALL_UNLOCKMESSAGE:
+	case MessageStyle::MESSAGE_STYLE_HINT_TALL_LONG:
+	case MessageStyle::MESSAGE_STYLE_ACHIEVEMENT:
+		thePosY = 476;
+		theRectHeight = 100;
+		theTextOffsetY = -4;
+		theColor = Color(253, 245, 173);
+		theMinAlpha = 192;
+		break;
+
+	case MessageStyle::MESSAGE_STYLE_HINT_LONG:
+	case MessageStyle::MESSAGE_STYLE_HINT_FAST:
+	case MessageStyle::MESSAGE_STYLE_HINT_STAY:
+		thePosY = 527;
+		theRectHeight = 55;
+		theTextOffsetY = -4;
+		theColor = Color(253, 245, 173);
+		theMinAlpha = 192;
+		break;
+
+	case MessageStyle::MESSAGE_STYLE_BIG_MIDDLE:
+	case MessageStyle::MESSAGE_STYLE_BIG_MIDDLE_FAST:
+		thePosY = 300;
+		theRectHeight = 110;
+		theColor = Color(253, 245, 173);
+		theMinAlpha = 192;
+		break;
+
+	case MessageStyle::MESSAGE_STYLE_HOUSE_NAME:
+		thePosY = 550;
+		theColor = Color(255, 255, 255, 255);
+		theFadeOut = true;
+		break;
+
+	case MessageStyle::MESSAGE_STYLE_HUGE_WAVE:
+		thePosY = 330;
+		theColor = Color(255, 0, 0);
+		break;
+
+	case MessageStyle::MESSAGE_STYLE_SLOT_MACHINE:
+		thePosY = 93;
+		thePosX = 340;
+		theMinAlpha = 64;
+		break;
+
+	case MessageStyle::MESSAGE_STYLE_ZEN_GARDEN_LONG:
+		thePosY = 514;
+		theRectHeight = 55;
+		theTextOffsetY = -4;
+		theColor = Color(253, 245, 173);
+		theMinAlpha = 192;
+		break;
+
+	default:
+		PVZP_ASSERT(false);
+		break;
+	}
+}
+
+// The dark band behind the message, across the screen (from 0 to BOARD_WIDTH), while one is shown; false without one
+bool MessageWidget::GetBand(int& theY, int& theHeight)
+{
+	if (mDuration <= 0 || mReanimType != ReanimationType::REANIM_NONE)
+		return false;
+	int aPosX = BOARD_WIDTH / 2, aPosY = 596, aTextOffsetY = 0, aRectHeight = 0, aMinAlpha = 255;
+	Color aColor(250, 250, 0, 255);
+	bool aFadeOut = false;
+	GetLayout(aPosX, aPosY, aTextOffsetY, aRectHeight, aMinAlpha, aColor, aFadeOut);
+	if (aRectHeight <= 0)
+		return false;
+	theY = aPosY;
+	theHeight = aRectHeight;
+	return true;
+}
+
 void MessageWidget::Draw(Graphics* g)
 {
 	if (mDuration <= 0)
@@ -380,78 +475,7 @@ void MessageWidget::Draw(Graphics* g)
 		aOutlineFont = Sexy::FONT_CONTINUUMBOLD14OUTLINE;
 	}
 
-	switch (mMessageStyle)
-	{
-	case MessageStyle::MESSAGE_STYLE_TUTORIAL_LEVEL1:
-	case MessageStyle::MESSAGE_STYLE_TUTORIAL_LEVEL1_STAY:
-		aPosY = 400;
-		aRectHeight = 110;
-		aTextOffsetY = -4;
-		aColor = Color(253, 245, 173);
-		aMinAlpha = 192;
-		break;
-
-	case MessageStyle::MESSAGE_STYLE_TUTORIAL_LEVEL2:
-	case MessageStyle::MESSAGE_STYLE_TUTORIAL_LATER:
-	case MessageStyle::MESSAGE_STYLE_TUTORIAL_LATER_STAY:
-	case MessageStyle::MESSAGE_STYLE_HINT_TALL_FAST:
-	case MessageStyle::MESSAGE_STYLE_HINT_TALL_UNLOCKMESSAGE:
-	case MessageStyle::MESSAGE_STYLE_HINT_TALL_LONG:
-	case MessageStyle::MESSAGE_STYLE_ACHIEVEMENT:
-		aPosY = 476;
-		aRectHeight = 100;
-		aTextOffsetY = -4;
-		aColor = Color(253, 245, 173);
-		aMinAlpha = 192;
-		break;
-
-	case MessageStyle::MESSAGE_STYLE_HINT_LONG:
-	case MessageStyle::MESSAGE_STYLE_HINT_FAST:
-	case MessageStyle::MESSAGE_STYLE_HINT_STAY:
-		aPosY = 527;
-		aRectHeight = 55;
-		aTextOffsetY = -4;
-		aColor = Color(253, 245, 173);
-		aMinAlpha = 192;
-		break;
-
-	case MessageStyle::MESSAGE_STYLE_BIG_MIDDLE:
-	case MessageStyle::MESSAGE_STYLE_BIG_MIDDLE_FAST:
-		aPosY = 300;
-		aRectHeight = 110;
-		aColor = Color(253, 245, 173);
-		aMinAlpha = 192;
-		break;
-
-	case MessageStyle::MESSAGE_STYLE_HOUSE_NAME:
-		aPosY = 550;
-		aColor = Color(255, 255, 255, 255);
-		aFadeOut = true;
-		break;
-
-	case MessageStyle::MESSAGE_STYLE_HUGE_WAVE:
-		aPosY = 330;
-		aColor = Color(255, 0, 0);
-		break;
-
-	case MessageStyle::MESSAGE_STYLE_SLOT_MACHINE:
-		aPosY = 93;
-		aPosX = 340;
-		aMinAlpha = 64;
-		break;
-
-	case MessageStyle::MESSAGE_STYLE_ZEN_GARDEN_LONG:
-		aPosY = 514;
-		aRectHeight = 55;
-		aTextOffsetY = -4;
-		aColor = Color(253, 245, 173);
-		aMinAlpha = 192;
-		break;
-
-	default:
-		PVZP_ASSERT(false);
-		break;
-	}
+	GetLayout(aPosX, aPosY, aTextOffsetY, aRectHeight, aMinAlpha, aColor, aFadeOut);
 
 	if (mReanimType != ReanimationType::REANIM_NONE)
 	{

@@ -7,18 +7,23 @@
 #ifdef PVZP_PHONE_LAYOUT_SELFTEST
 
 #include "PhoneLayoutSelfTest.h"
+#include "PhoneLayout.h"
 #include "LawnApp.h"
 #include "Lawn/Board.h"
 #include "Lawn/Challenge.h"
 #include "Lawn/CursorObject.h"
 #include "Lawn/Cutscene.h"
 #include "Lawn/Plant.h"
+#include "Lawn/Zombie.h"
 #include "Lawn/SeedPacket.h"
 #include "Lawn/System/PlayerInfo.h"
 #include "Lawn/System/ProfileMgr.h"
 #include "Lawn/Widget/GameButton.h"
 #include "Lawn/Widget/SeedChooserScreen.h"
 #include "Lawn/Widget/TitleScreen.h"
+#include "widget/HyperlinkWidget.h"
+#include "Lawn/Widget/GameSelector.h"
+#include "Lawn/Widget/ZombatarWidget.h"
 #include "graphics/GLInterface.h"
 #include "imagelib/ImageLib.h"
 #include <algorithm>
@@ -41,7 +46,7 @@ namespace
 enum class Step
 {
 	Start, Loading, MainMenu, Screens, NextLevel, Intro, WaitTiled, RefOff, RefCapture, TiledOn, TiledCapture,
-	PickPacket, PlacePlant, PickShovel, Dig, Menu, MenuClosed, Watch, Done
+	PickPacket, PlacePlant, PickShovel, Dig, Menu, MenuClosed, Watch, Look, Done
 };
 
 struct Level
@@ -50,6 +55,8 @@ struct Level
 	GameMode	mMode;
 	int			mAdventureLevel;	// adventure only
 	int			mExtraSlots;		// packets above 6
+	bool		mLookOnly = false;	// only a picture of it a while into it, and nothing black (levels of their own)
+	bool		mZombiesWin = false;	// and the zombies win it first (the camera pans past the house)
 };
 
 struct State
@@ -185,6 +192,28 @@ Rgb Window(const GLInterface::FrameCapture& c, double theX, double theY)
 		c.mWindowHeight - 1 - static_cast<int>(theY * c.mWindowHeight / c.mPointHeight));
 }
 
+// The black areas of the window right of theLeft: cells of 16x16 points nearly all black (not the black lines of the
+// pictures, which never fill one)
+int BlackCells(const GLInterface::FrameCapture& c, double theLeft)
+{
+	int aCells = 0;
+	for (double y0 = 0; y0 + 16 <= c.mPointHeight; y0 += 16)
+	{
+		for (double x0 = theLeft; x0 + 16 <= c.mPointWidth; x0 += 16)
+		{
+			int aBlack = 0, aSamples = 0;
+			for (double y = y0 + 1; y < y0 + 16; y += 3)
+				for (double x = x0 + 1; x < x0 + 16; x += 3)
+				{
+					aSamples++;
+					aBlack += Brightness(Window(c, x, y)) <= 12;
+				}
+			aCells += aBlack * 10 >= aSamples * 9;
+		}
+	}
+	return aCells;
+}
+
 bool InAnyTile(const std::vector<PresentationTile>& theTiles, double theX, double theY, double theMargin)
 {
 	for (const PresentationTile& t : theTiles)
@@ -205,7 +234,7 @@ void CheckPicture(LawnApp* theApp, const GLInterface::FrameCapture& theRef, cons
 	{
 		const PresentationTile& t = aTiles[i];
 		Log("  tile {}{}: ({:.1f},{:.1f} {:.1f}x{:.1f}) -> window ({:.1f},{:.1f} {:.1f}x{:.1f}), x{:.3f}", i,
-			t.mImage ? " (backdrop image)" : t.mOverlay == 2 ? " (card)" : t.mOverlay == 3 ? " (sun counter)" : t.mOverlay == 4 ? " (progress meter)" : t.mOverlay == 5 ? " (menu button)" : t.mOverlay == 6 ? " (shovel)" : t.mOverlay == 7 ? " (conveyor belt)" : t.mOverlay == 8 ? " (weather)" : t.mOverlay == 10 ? " (main menu scenery)" : t.mOverlay == 11 ? " (mirrored background)" : t.mBlur ? " (blurred)" : "",
+			t.mImage ? " (backdrop image)" : t.mOverlay == 2 ? " (card)" : t.mOverlay == 3 ? " (sun counter)" : t.mOverlay == 4 ? " (progress meter)" : t.mOverlay == 5 ? " (menu button)" : t.mOverlay == 6 ? " (shovel)" : t.mOverlay == 7 ? " (conveyor belt)" : t.mOverlay == 8 ? " (weather)" : t.mOverlay == 10 ? " (surroundings)" : t.mOverlay == 11 ? " (beyond the screen)" : t.mOverlay == 12 ? " (band)" : t.mOverlay == 13 ? " (title)" : t.mBlur ? " (blurred)" : "",
 			t.mSource.mX, t.mSource.mY, t.mSource.mWidth, t.mSource.mHeight, t.mDest.mX, t.mDest.mY, t.mDest.mWidth,
 			t.mDest.mHeight, t.mDest.mWidth / t.mSource.mWidth);
 	}
@@ -236,8 +265,8 @@ void CheckPicture(LawnApp* theApp, const GLInterface::FrameCapture& theRef, cons
 	FRect aBank(10000, 10000, 0, 0);
 	for (const PresentationTile& t : aTiles)
 	{
-		if (t.mOverlay == 0)
-			continue;
+		if (t.mOverlay < 2 || t.mOverlay > 7)
+			continue;	// not what the layout moves out of the screen (the cards ... the conveyor belt)
 		aMoved.push_back(FRect(t.mSource.mX - 3, t.mSource.mY - 3, t.mSource.mWidth + 6, t.mSource.mHeight + 6));
 		if (t.mOverlay == 7)	// the conveyor belt: where the game has it
 			aMoved.push_back(FRect(t.mSource.mX - 8, 0, t.mSource.mWidth + 16, t.mSource.mHeight + 4));
@@ -367,8 +396,10 @@ void CheckPicture(LawnApp* theApp, const GLInterface::FrameCapture& theRef, cons
 			aBlack += Brightness(Window(theTiled, x, y)) <= 12;
 		}
 	}
-	Log("  {:.2f}% of the window right of the safe area's left edge is black", aRightOfSafe ? 100.0 * aBlack / aRightOfSafe : 0.0);
-	Check(aBlack * 100 < aRightOfSafe * 3, "nothing large is black right of the safe area's left edge");
+	int aBlackCells = BlackCells(theTiled, aSafeLeft);
+	Log("  {:.2f}% of the window right of the safe area's left edge is black, {} black areas of 16x16 points", aRightOfSafe ? 100.0 * aBlack / aRightOfSafe : 0.0,
+		aBlackCells);
+	Check(aBlackCells == 0, "nothing large is black right of the safe area's left edge");
 	Check(aAllLit * 100 > aAll * 85, "the game covers most of the window");
 	(void)theApp;
 }
@@ -405,15 +436,16 @@ bool InLevelLayout(LawnApp* theApp)
 
 // a frame shown framed: the game's screen as tall as the window, a blurred copy under all, nothing black right of the
 // safe area's left edge, and around the screen: the main menu's scenery (with the screen where the level layout has it,
-// or in the middle for a page), the backdrop of the level (the screen where the level layout has it), the store's
-// background mirrored, or nothing but the blur
-enum class Framed { Plain, MenuScene, Backdrop, Page, Mirrored };
+// for the main menu against the window's right edge, in the middle for a page), the backdrop of the level (the screen
+// where the level layout has it), the store's fence going on left of it (against the window's right edge), or nothing
+// but the blur
+enum class Framed { Plain, MenuScene, Backdrop, Page, Store, Garden, Note, Title, Any };
 
 void CheckFramed(LawnApp* theApp, const GLInterface::FrameCapture& c, const std::string& theWhat, Framed theExpected)
 {
 	const PresentationTile* aBlur = nullptr;
 	const PresentationTile* aScreen = nullptr;
-	int aBackdrops = 0, aScenes = 0, aMirrored = 0;
+	int aBackdrops = 0, aSurround = -1;
 	for (const PresentationTile& t : c.mTiles)
 	{
 		if (t.mBlur)
@@ -421,9 +453,7 @@ void CheckFramed(LawnApp* theApp, const GLInterface::FrameCapture& c, const std:
 		else if (t.mImage != nullptr)
 			aBackdrops++;
 		else if (t.mOverlay == 10)
-			aScenes++;
-		else if (t.mOverlay == 11)
-			aMirrored++;
+			aSurround = t.mOverlayIndex;
 		else if (t.mOverlay == 0)
 			aScreen = &t;
 	}
@@ -434,24 +464,39 @@ void CheckFramed(LawnApp* theApp, const GLInterface::FrameCapture& c, const std:
 	// the whole screen, also where a page's frame is cut off it
 	double aScale = aScreen->mDest.mHeight / aScreen->mSource.mHeight;
 	double aScreenX = aScreen->mDest.mX - aScreen->mSource.mX * aScale, aScreenWidth = 800 * aScale;
-	Log("  {}: the game's screen at ({:.1f},{:.1f} {:.1f}x{:.1f}); {} pieces of the backdrop, {} of scenery, {} mirrored", theWhat, aScreenX,
-		aScreen->mDest.mY, aScreenWidth, aScreen->mDest.mHeight, aBackdrops, aScenes, aMirrored);
+	static const char* const SURROUNDS[] = { "nothing", "the main menu's scenery", "the store's", "a page's", "the garden's", "a note's", "the tree's",
+		"the credits'" };
+	Log("  {}: the game's screen at ({:.1f},{:.1f} {:.1f}x{:.1f}); {} pieces of the backdrop; around it {}", theWhat, aScreenX, aScreen->mDest.mY, aScreenWidth,
+		aScreen->mDest.mHeight, aBackdrops, aSurround >= 1 && aSurround <= 7 ? SURROUNDS[aSurround] : "only the blur");
 	Check(std::abs(aScreen->mDest.mHeight - c.mPointHeight) < 1, theWhat + ": the game's screen is as tall as the window");
 	Check(aBlur->mDest.mX <= 0 && aBlur->mDest.mY <= 0 && aBlur->mDest.mWidth >= c.mPointWidth && aBlur->mDest.mHeight >= c.mPointHeight,
 		theWhat + ": the blurred copy covers the window");
-	bool aScenery = theExpected == Framed::MenuScene || theExpected == Framed::Page;
-	Check((aScenes > 0) == aScenery, theWhat + (aScenery ? ": the main menu's scenery is around it" : ": no main menu scenery"));
+	int anExpectedSurround =
+		theExpected == Framed::MenuScene ? PhoneLayout::SURROUND_MENU : theExpected == Framed::Store ? PhoneLayout::SURROUND_STORE :
+		theExpected == Framed::Page ? PhoneLayout::SURROUND_PAGE : theExpected == Framed::Garden ? PhoneLayout::SURROUND_GARDEN :
+		theExpected == Framed::Note ? PhoneLayout::SURROUND_NOTE : -1;
+	if (theExpected == Framed::Title)
+	{
+		bool aTitle = false;
+		for (const PresentationTile& t : c.mTiles)
+			aTitle = aTitle || t.mOverlay == 13;
+		Check(aTitle, theWhat + ": the title is drawn over the whole window");
+	}
+	else if (theExpected != Framed::Any)
+		Check(aSurround == anExpectedSurround, theWhat + (anExpectedSurround > 0 ? std::string(": around it ") + SURROUNDS[anExpectedSurround] : std::string(": nothing around it but the blur")));
 	// (on the pool only the backdrop's part left of the lawn is shown, the image having no water: when the board is panned
 	// there may be none of it on the window)
 	bool aMayLack = theExpected == Framed::Backdrop && theApp->mBoard && theApp->mBoard->StageHasPool() && theApp->mBoard->mX != 0;
-	Check(((aBackdrops > 0) || aMayLack) == (theExpected == Framed::Backdrop), theWhat + (theExpected == Framed::Backdrop ? ": the backdrop of the level is beside it" : ": no backdrop"));
-	Check((aMirrored > 0) == (theExpected == Framed::Mirrored), theWhat + (theExpected == Framed::Mirrored ? ": the background is mirrored around it" : ": no mirrored background"));
-	if (theExpected == Framed::Backdrop || theExpected == Framed::MenuScene)
+	if (theExpected != Framed::Any)
+		Check(((aBackdrops > 0) || aMayLack) == (theExpected == Framed::Backdrop), theWhat + (theExpected == Framed::Backdrop ? ": the backdrop of the level is beside it" : ": no backdrop"));
+	if (theExpected == Framed::Backdrop || theExpected == Framed::Garden)
 		Check(std::abs(aScreenX + aScreenWidth - (aSafeLeft + aSafeWidth)) < 1, theWhat + ": the game's screen is where the level layout has it");
-	else
+	else if (theExpected == Framed::MenuScene || theExpected == Framed::Store)
+		Check(std::abs(aScreenX + aScreenWidth - c.mPointWidth) < 1, theWhat + ": the game's screen is against the window's right edge");
+	else if (theExpected != Framed::Any)
 		Check(std::abs(aScreenX + aScreenWidth / 2 - (aSafeLeft + aSafeWidth / 2)) < 1, theWhat + ": the game's screen is in the middle of the safe area");
-	if (theApp->IsStormyNightLevel())
-		return;	// dark but for its lightning: not checked
+	if (theApp->IsStormyNightLevel() || theApp->mCreditScreen)
+		return;	// dark but for its lightning, or the credits' black: not checked
 	int aSamples = 0, aBlack = 0, aSides = 0, aSidesLit = 0;
 	for (double y = 1; y < c.mPointHeight; y += 2)
 	{
@@ -467,9 +512,10 @@ void CheckFramed(LawnApp* theApp, const GLInterface::FrameCapture& c, const std:
 			}
 		}
 	}
-	Log("  {}: {:.2f}% black right of the safe area's left edge; beside the game's screen {:.1f}% lit", theWhat, 100.0 * aBlack / std::max(1, aSamples),
-		100.0 * aSidesLit / std::max(1, aSides));
-	Check(aBlack * 100 < aSamples * 3, theWhat + ": nothing large is black right of the safe area's left edge");
+	int aBlackCells = BlackCells(c, aSafeLeft);
+	Log("  {}: {:.2f}% black right of the safe area's left edge, {} black areas of 16x16 points; beside the game's screen {:.1f}% lit", theWhat,
+		100.0 * aBlack / std::max(1, aSamples), aBlackCells, 100.0 * aSidesLit / std::max(1, aSides));
+	Check(aBlackCells == 0, theWhat + ": nothing large is black right of the safe area's left edge");
 	Check(aSidesLit * 100 > aSides * 90, theWhat + ": beside the game's screen something shows");
 }
 
@@ -481,7 +527,7 @@ bool ToWindow(LawnApp* theApp, double theX, double theY, double& theWindowX, dou
 	for (auto anItr = aTiles.rbegin(); anItr != aTiles.rend(); ++anItr)
 	{
 		const PresentationTile& t = *anItr;
-		if (t.mImage != nullptr || t.mNoTap)
+		if (t.mImage != nullptr || t.mNoTap || t.mTapThrough || t.mBlur)
 			continue;	// the backdrop (in the pixels of its image), and what takes no tap
 		if (theX < t.mSource.mX || theX >= t.mSource.mX + t.mSource.mWidth || theY < t.mSource.mY || theY >= t.mSource.mY + t.mSource.mHeight)
 			continue;
@@ -545,6 +591,18 @@ std::vector<Level> ParseLevels(const char* theList)
 		{ "adventure 1-10", GameMode::GAMEMODE_ADVENTURE, 10, 0 },		// a conveyor belt
 		{ "adventure 2-10", GameMode::GAMEMODE_ADVENTURE, 20, 0 },		// a conveyor belt at night
 		{ "adventure 4-10", GameMode::GAMEMODE_ADVENTURE, 40, 0 },		// a conveyor belt, in a stormy night: dark but for lightning
+		// levels of their own, only looked at
+		{ "wallnut bowling", GameMode::GAMEMODE_CHALLENGE_WALLNUT_BOWLING, 0, 0, true },
+		{ "slot machine", GameMode::GAMEMODE_CHALLENGE_SLOT_MACHINE, 0, 0, true },
+		{ "beghouled", GameMode::GAMEMODE_CHALLENGE_BEGHOULED, 0, 0, true },
+		{ "zombiquarium", GameMode::GAMEMODE_CHALLENGE_ZOMBIQUARIUM, 0, 0, true },
+		{ "whack a zombie", GameMode::GAMEMODE_CHALLENGE_WHACK_A_ZOMBIE, 0, 0, true },
+		{ "last stand", GameMode::GAMEMODE_CHALLENGE_LAST_STAND, 0, 0, true },
+		{ "vasebreaker", GameMode::GAMEMODE_SCARY_POTTER_1, 0, 0, true },
+		{ "i zombie", GameMode::GAMEMODE_PUZZLE_I_ZOMBIE_1, 0, 0, true },
+		{ "tree of wisdom", GameMode::GAMEMODE_TREE_OF_WISDOM, 0, 0, true },
+		{ "adventure 5-10", GameMode::GAMEMODE_ADVENTURE, 50, 0, true },	// Dr. Zomboss
+		{ "zombies won", GameMode::GAMEMODE_SURVIVAL_NORMAL_STAGE_1, 0, 0, true, true },
 	};
 	if (theList == nullptr || theList[0] == '\0')
 		return aAll;
@@ -699,8 +757,11 @@ void Update(LawnApp* theApp)
 		if (theApp->mTitleScreen && !gState.mShow && !gState.mTitleSeen)
 		{
 			// the title screen (after the logos, a while into it), framed, before going on
-			if (theApp->mTitleScreen->mTitleState != TitleState::TITLESTATE_SCREEN || theApp->mTitleScreen->mTitleStateCounter > 0 && gState.mTicks < 3000 &&
-				theApp->mTitleScreen->mTitleAge < 200)
+			// (after the logos, once its logo has come down and its loading bar up)
+			const TitleScreen& aTitle = *theApp->mTitleScreen;
+			bool aSettled = aTitle.mTitleState == TitleState::TITLESTATE_SCREEN && !aTitle.mNeedToInit && aTitle.mTitleStateCounter == 0 &&
+				aTitle.mStartButton && aTitle.mStartButton->mY < BOARD_HEIGHT;
+			if (!aSettled && gState.mTicks < 3000)
 				break;
 			if (!aGL->mCapture.mRequested && !aGL->mCapture.mDone)
 				aGL->mCapture.mRequested = true;
@@ -708,7 +769,7 @@ void Update(LawnApp* theApp)
 				break;
 			Log("");
 			Log("title screen");
-			CheckFramed(theApp, aGL->mCapture, "the title screen", Framed::Plain);
+			CheckFramed(theApp, aGL->mCapture, "the title screen", Framed::Title);
 			SaveWindow(aGL->mCapture, "title");
 			aGL->mCapture = GLInterface::FrameCapture{};
 			gState.mTitleSeen = true;
@@ -760,49 +821,110 @@ void Update(LawnApp* theApp)
 
 	case Step::Screens:
 	{
-		// other screens outside the levels, framed: the almanac, the store, the mini-games
-		static const char* const NAMES[] = { "almanac", "store", "mini-games" };
-		if (gState.mScreen >= 3)
+		// the other screens outside the levels, framed: each shown, a picture of it, put away
+		struct Screen
+		{
+			const char*	mName;
+			Framed		mExpected;
+			int			mWait;		// ticks to show it before the picture
+		};
+		static const Screen SCREENS[] = {
+			{ "almanac", Framed::Page, 200 }, { "store", Framed::Store, 200 }, { "achievements", Framed::MenuScene, 250 }, { "zombatar", Framed::MenuScene, 250 },
+			{ "help", Framed::Note, 200 }, { "award", Framed::Page, 300 }, { "mini-games", Framed::Page, 200 }, { "credits", Framed::Any, 3000 },
+			{ "zen garden", Framed::Garden, 400 },
+		};
+		constexpr int NUM_SCREENS = static_cast<int>(sizeof(SCREENS) / sizeof(SCREENS[0]));
+		if (gState.mScreen >= NUM_SCREENS)
 		{
 			Goto(Step::NextLevel);
 			break;
 		}
+		const Screen& aScreen = SCREENS[gState.mScreen];
+		std::string aName = aScreen.mName;
 		if (gState.mTicks == 1)
 		{
 			Log("");
-			Log("{}", NAMES[gState.mScreen]);
-			if (gState.mScreen == 0)
+			Log("{}", aName);
+			if (aName == "almanac")
 				theApp->DoAlmanacDialog();
-			else if (gState.mScreen == 1)
+			else if (aName == "store")
 				theApp->ShowStoreScreen();
-			else
+			else if (aName == "achievements" && theApp->mGameSelector)
+				theApp->mGameSelector->ShowAchievementsScreen();
+			else if (aName == "zombatar" && theApp->mGameSelector && theApp->mPlayerInfo)
+			{
+				theApp->mPlayerInfo->mZombatarAccepted = true;
+				theApp->mGameSelector->ShowZombatarScreen();
+			}
+			else if (aName == "help")
+			{
+				theApp->KillGameSelector();
+				theApp->ShowAwardScreen(AwardType::AWARD_HELP_ZOMBIENOTE, false);
+			}
+			else if (aName == "award")
+			{
+				theApp->KillGameSelector();
+				theApp->ShowAwardScreen(AwardType::AWARD_FORLEVEL, false);
+			}
+			else if (aName == "mini-games")
 			{
 				theApp->KillGameSelector();	// as the main menu does when the mini-games are picked
 				theApp->ShowChallengeScreen(ChallengePage::CHALLENGE_PAGE_CHALLENGE);
 			}
+			else if (aName == "credits")
+			{
+				theApp->KillGameSelector();
+				theApp->ShowCreditScreen();
+			}
+			else if (aName == "zen garden")
+			{
+				theApp->KillGameSelector();
+				theApp->PreNewGame(GameMode::GAMEMODE_CHALLENGE_ZEN_GARDEN, false);
+			}
 		}
-		else if (gState.mTicks == 200)
+		else if (gState.mTicks == aScreen.mWait)
 		{
 			aGL->mCapture = GLInterface::FrameCapture{};
 			aGL->mCapture.mRequested = true;
 		}
-		else if (gState.mTicks > 200 && (aGL->mCapture.mDone || gState.mTicks > 1000))
+		else if (gState.mTicks > aScreen.mWait && (aGL->mCapture.mDone || gState.mTicks > aScreen.mWait + 800))
 		{
 			if (aGL->mCapture.mDone)
 			{
-				CheckFramed(theApp, aGL->mCapture, std::format("the {}", NAMES[gState.mScreen]), gState.mScreen == 1 ? Framed::Mirrored : Framed::Page);
-				SaveWindow(aGL->mCapture, NAMES[gState.mScreen]);
+				CheckFramed(theApp, aGL->mCapture, "the " + aName, aScreen.mExpected);
+				SaveWindow(aGL->mCapture, aName);
 			}
 			else
-				Check(false, std::format("the {} was captured", NAMES[gState.mScreen]));
+				Check(false, "the " + aName + " was captured");
 			aGL->mCapture = GLInterface::FrameCapture{};
-			if (gState.mScreen == 0)
+			while (theApp->GetDialogCount() > 0 && !theApp->mDialogMap.empty())
+				theApp->KillDialog(theApp->mDialogMap.begin()->first);
+			if (aName == "almanac")
 				theApp->KillAlmanacDialog();
-			else if (gState.mScreen == 1)
+			else if (aName == "store")
 				theApp->KillStoreScreen();
-			else
+			else if (aName == "achievements" || aName == "zombatar")
+			{
+				theApp->ShowGameSelector();	// the main menu anew, slid back
+			}
+			else if (aName == "help" || aName == "award")
+			{
+				theApp->KillAwardScreen();
+				theApp->ShowGameSelector();
+			}
+			else if (aName == "mini-games")
 			{
 				theApp->KillChallengeScreen();
+				theApp->ShowGameSelector();
+			}
+			else if (aName == "credits")
+			{
+				theApp->KillCreditScreen();
+				theApp->ShowGameSelector();
+			}
+			else if (aName == "zen garden")
+			{
+				theApp->KillBoard();
 				theApp->ShowGameSelector();
 			}
 			gState.mScreen++;
@@ -872,7 +994,7 @@ void Update(LawnApp* theApp)
 		}
 		if (aBoard && aBoard->mCutScene && aBoard->mCutScene->IsShowingCrazyDave() && gState.mTicks % 30 == 0)
 			aBoard->mCutScene->AdvanceCrazyDaveDialog(false);	// Crazy Dave talks before some levels: on to the next line
-		if (theApp->mGameScene == GameScenes::SCENE_PLAYING)
+		if (theApp->mGameScene == GameScenes::SCENE_PLAYING || (gState.mLevels[gState.mLevel - 1].mLookOnly && theApp->mBoard && gState.mTicks > 600))
 		{
 			gFastMo = false;
 			if (gState.mShow)
@@ -880,7 +1002,7 @@ void Update(LawnApp* theApp)
 				gState.mStep = Step::Done;
 				break;
 			}
-			Goto(Step::WaitTiled);
+			Goto(gState.mLevels[gState.mLevel - 1].mLookOnly ? Step::Look : Step::WaitTiled);
 		}
 		else if (gState.mTicks > 100 * 60)
 			FailLevel(std::format("the level started within a minute (scene {}, {} dialogs, cutscene {})", static_cast<int>(theApp->mGameScene),
@@ -1114,7 +1236,12 @@ void Update(LawnApp* theApp)
 		// ten seconds of play, for the switches between tiled and letterboxed; near their end a second picture, with
 		// the progress meter shown (it shows from the first wave on) and the packet planted recharging
 		if (gState.mTicks == 900 && aBoard)
+		{
 			aBoard->mProgressMeterWidth = std::max(aBoard->mProgressMeterWidth, 60);
+			// a zombie coming in from the street, across the screen's right edge
+			if (Zombie* aZombie = aBoard->AddZombieInRow(ZombieType::ZOMBIE_NORMAL, 1, 0))
+				aZombie->mPosX = 760.0f;
+		}
 		else if (gState.mTicks == 950 && !gState.mShotDir.empty())
 			aGL->mCapture.mRequested = true;
 		else if (gState.mTicks > 950 && aGL->mCapture.mDone)
@@ -1125,6 +1252,43 @@ void Update(LawnApp* theApp)
 		if (gState.mTicks > 1000)
 		{
 			Check(gState.mTransitions == 0, std::format("the layout stays tiled through ten seconds of play ({} switches)", gState.mTransitions));
+			Goto(Step::NextLevel);
+		}
+		break;
+
+	case Step::Look:
+		// a level of its own: a picture of it a while into it, nothing large black in it
+		if (gState.mTicks == 100 && gState.mLevels[gState.mLevel - 1].mZombiesWin && aBoard)
+		{
+			if (Zombie* aZombie = aBoard->AddZombieInRow(ZombieType::ZOMBIE_NORMAL, 2, 0))
+			{
+				aZombie->mPosX = 0;
+				aBoard->ZombiesWon(aZombie);
+			}
+		}
+		if (gState.mTicks == 400)
+		{
+			aGL->mCapture = GLInterface::FrameCapture{};
+			aGL->mCapture.mRequested = true;
+		}
+		else if (gState.mTicks > 400 && (aGL->mCapture.mDone || gState.mTicks > 1500))
+		{
+			if (aGL->mCapture.mDone)
+			{
+				const GLInterface::FrameCapture& c = aGL->mCapture;
+				Log("  {} tiles, the level {}", c.mTiles.size(), InLevelLayout(theApp) ? "in the phone layout" : "framed");
+				Check(c.mTiled, "the frame was drawn tiled");
+				if (!theApp->IsStormyNightLevel())
+				{
+					int aBlackCells = BlackCells(c, gState.mHasSafe ? gState.mSafe.x : 0);
+					Log("  {} black areas of 16x16 points right of the safe area's left edge", aBlackCells);
+					Check(aBlackCells == 0, "nothing large is black right of the safe area's left edge");
+				}
+				SaveWindow(c, gState.mLevels[gState.mLevel - 1].mName);
+			}
+			else
+				Check(false, "the level was captured");
+			aGL->mCapture = GLInterface::FrameCapture{};
 			Goto(Step::NextLevel);
 		}
 		break;

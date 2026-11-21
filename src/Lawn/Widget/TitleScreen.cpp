@@ -157,6 +157,18 @@ void TitleScreen::Draw(Graphics* g)
 	}
 
 	g->DrawImage(IMAGE_TITLESCREEN, 0, 0);
+	DrawForeground(g);
+}
+
+// Whether the title is shown, its picture with the logo and the loading bar over it (not the logos before it)
+bool TitleScreen::ShowsTitle()
+{
+	return mTitleState == TitleState::TITLESTATE_SCREEN && mLoaderScreenIsLoaded;
+}
+
+// What is drawn over the title's picture: the logo and the loading bar, with what grows on it
+void TitleScreen::DrawForeground(Graphics* g)
+{
 	if (mNeedToInit)
 	{
 		return;

@@ -82,6 +82,8 @@ public:
 
 	void					Update() override;
 	void					Draw(Graphics* g) override;
+	bool					ShowsTitle();
+	void					DrawForeground(Graphics* g);
 	void					Resize(int theX, int theY, int theWidth, int theHeight) override;
 	void					AddedToManager(WidgetManager* theWidgetManager) override;
 	void					RemovedFromManager(WidgetManager* theWidgetManager) override;

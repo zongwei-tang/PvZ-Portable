@@ -19,10 +19,12 @@ Tile MakeTile(const Box& theSource, double theX, double theY, double theScale, K
 	return Tile{ theSource, Box{ theX, theY, theSource.mWidth * theScale, theSource.mHeight * theScale }, theKind };
 }
 
-// The game's screen as tall as the window, against the right edge of the safe area, unless that leaves too little room
-// for the cards; then smaller, and centred in the height. Before it the backdrop left and right of it, in line with it,
-// over as much of the window as it covers: the image ends a little right of the safe area's left edge, and its part left
+// The game's screen as tall as the window, against the right edge of the safe area (further left when the backdrop
+// needs it to reach the window's left edge), unless that leaves too little room for the cards; then smaller, and
+// centred in the height. Before it the backdrop left and right of it, in line with it,
+// over as much of the window as it covers: the image ends a little right of the window's left edge, and its part left
 // of the game's screen (the house) is stretched across to it (twice as wide at the most), so that no black shows there.
+// Without a backdrop what goes on around the screen (mSurround), if anything.
 // After it the darkness the game draws over its screen, if any, over the backdrop. False when there is no room.
 bool PlaceScreen(const Input& theInput, std::vector<Tile>& theTiles, double& theScale, double& theLawnX, double& theLawnY)
 {
@@ -35,6 +37,15 @@ bool PlaceScreen(const Input& theInput, std::vector<Tile>& theTiles, double& the
 		return false;
 	double aLawnX = aSafe.Right() - aLawn.mWidth * aScale;
 	double aLawnY = (theInput.mScreenHeight - aLawn.mHeight * aScale) / 2;
+	if (!theInput.mBackdrop.Empty())
+	{
+		// when the backdrop has too little left of the game's screen to reach the safe area's left edge, stretched twice
+		// at the most (the board panned to the house, in a cutscene), the screen further left, to the window's left edge
+		// at the most, and the backdrop with it
+		double aLeftPart = std::max(0.0, (aLawn.mX - theInput.mBackdrop.mX) * aScale);
+		if (aLawnX > aSafe.mX + 2 * aLeftPart)
+			aLawnX = std::max(0.0, 2 * aLeftPart);
+	}
 	auto InPlace = [&](const Box& theSource)
 	{
 		return MakeTile(theSource, aLawnX + (theSource.mX - aLawn.mX) * aScale, aLawnY + (theSource.mY - aLawn.mY) * aScale, aScale);
@@ -50,12 +61,12 @@ bool PlaceScreen(const Input& theInput, std::vector<Tile>& theTiles, double& the
 		double aBottom = std::min(aBack.Bottom(), aLawn.mY + (theInput.mScreenHeight - aLawnY) / aScale);
 		if (aRight > aLeft && aBottom > aTop)
 		{
-			double aLeftEnd = std::min({ aLawn.mX, aRight, theInput.mBackdropRight });
+			double aLeftEnd = std::min(aLawn.mX, aRight);
 			if (aLeft < aLeftEnd)
 			{
 				Tile aTile = InPlace(Box{ aLeft, aTop, aLeftEnd - aLeft, aBottom - aTop });
 				aTile.mKind = Kind::Backdrop;
-				double aStretchTo = std::max({ 0.0, aSafe.mX, aTile.mDest.Right() - 2 * aTile.mDest.mWidth });
+				double aStretchTo = std::max(0.0, aTile.mDest.Right() - 2 * aTile.mDest.mWidth);
 				if (aTile.mDest.mX > aStretchTo && aTile.mDest.Right() >= aLawnX - 1e-9)
 				{
 					aTile.mDest.mWidth = aTile.mDest.Right() - aStretchTo;
@@ -63,20 +74,53 @@ bool PlaceScreen(const Input& theInput, std::vector<Tile>& theTiles, double& the
 				}
 				theTiles.push_back(aTile);
 			}
-			if (aRight > aLawn.Right() && aRight <= theInput.mBackdropRight)
+			if (aRight > aLawn.Right())
 			{
 				double aFrom = std::max(aLawn.Right(), aLeft);
 				Tile aTile = InPlace(Box{ aFrom, aTop, aRight - aFrom, aBottom - aTop });
 				aTile.mKind = Kind::Backdrop;
 				theTiles.push_back(aTile);
 			}
+
+			// past the image's ends, where it does not reach the window's edges (the board panned, the image short):
+			// the image going on mirrored, its end at the mirror
+			double aCoveredLeft = aLawnX, aCoveredRight = aLawnX + aLawn.mWidth * aScale;
+			for (size_t i = aFirstBackdrop; i < theTiles.size(); i++)
+			{
+				aCoveredLeft = std::min(aCoveredLeft, theTiles[i].mDest.mX);
+				aCoveredRight = std::max(aCoveredRight, theTiles[i].mDest.Right());
+			}
+			double aImageTop = aLawnY + (aBack.mY - aLawn.mY) * aScale;
+			double aImageHeight = aBack.mHeight * aScale;
+			if (aCoveredLeft > 0.5)
+			{
+				// the image's left edge where the covered part begins (as drawn, stretched or not)
+				double aWidth = std::min(aCoveredLeft, aBack.mWidth * aScale);
+				Tile aTile{ Box{ aBack.mX, aBack.mY, aWidth / aScale, aBack.mHeight }, Box{ aCoveredLeft - aWidth, aImageTop, aWidth, aImageHeight }, Kind::Backdrop };
+				aTile.mMirrored = true;
+				theTiles.push_back(aTile);
+			}
+			if (aCoveredRight < theInput.mScreenWidth - 0.5)
+			{
+				double aWidth = std::min(theInput.mScreenWidth - aCoveredRight, aBack.mWidth * aScale);
+				Tile aTile{ Box{ aBack.Right() - aWidth / aScale, aBack.mY, aWidth / aScale, aBack.mHeight }, Box{ aCoveredRight, aImageTop, aWidth, aImageHeight },
+					Kind::Backdrop };
+				aTile.mMirrored = true;
+				theTiles.push_back(aTile);
+			}
 		}
 	}
 	size_t aEndBackdrop = theTiles.size();
+	if (theInput.mBackdrop.Empty() && theInput.mSurround != SURROUND_NONE)
+		theTiles.push_back(Tile{ aLawn, InPlace(aLawn).mDest, Kind::Surround, theInput.mSurround });
+	if (theInput.mBeyond && aEndBackdrop > aFirstBackdrop)
+		theTiles.push_back(Tile{ aLawn, InPlace(aLawn).mDest, Kind::Beyond });
 	theTiles.push_back(InPlace(aLawn));
 	if (theInput.mDarkWeather)
 		for (size_t i = aFirstBackdrop; i < aEndBackdrop; i++)
 			theTiles.push_back(Tile{ theTiles[i].mSource, theTiles[i].mDest, Kind::Weather });
+	if (theInput.mBeyond)
+		theTiles.push_back(Tile{ aLawn, InPlace(aLawn).mDest, Kind::Band });
 	theScale = aScale;
 	theLawnX = aLawnX;
 	theLawnY = aLawnY;
@@ -200,28 +244,37 @@ std::vector<Tile> ComputeFramed(const Input& theInput)
 	double aHeight = std::min(aScreen.mHeight, aScreen.mWidth * theInput.mScreenHeight / theInput.mScreenWidth);
 	aTiles.push_back(Tile{ Box{ aScreen.mX, aScreen.mY + (aScreen.mHeight - aHeight) / 2, aScreen.mWidth, aHeight },
 		Box{ 0, 0, theInput.mScreenWidth, theInput.mScreenHeight }, Kind::Blur });
-	if (!theInput.mBackdrop.Empty() || (theInput.mMenuScene && !theInput.mPage))
+	if (!theInput.mBackdrop.Empty() || theInput.mSurround == SURROUND_GARDEN || theInput.mSurround == SURROUND_TREE)
 	{
-		// a lawn behind, or the main menu: where the levels have the game's screen, over the backdrop, or with the main
-		// menu's scenery going on around it (most of it left of the screen, where the main menu's tree is)
+		// a board behind: where the levels have the game's screen, over the backdrop or with the board's own picture
+		// going on
 		double aScale = 0, aX = 0, aY = 0;
 		if (!PlaceScreen(theInput, aTiles, aScale, aX, aY))
 			return {};
-		if (theInput.mMenuScene)
-		{
-			Tile aScreenTile = aTiles.back();
-			aTiles.insert(aTiles.end() - 1, Tile{ aScreenTile.mSource, aScreenTile.mDest, Kind::MenuScene });
-		}
 		return aTiles;
 	}
-	// else in the middle of the safe area, as tall as the window
 	double aScale = std::min(theInput.mScreenHeight / aScreen.mHeight, aSafe.mWidth / aScreen.mWidth);
 	Tile aTile = MakeTile(aScreen, aSafe.mX + (aSafe.mWidth - aScreen.mWidth * aScale) / 2, (theInput.mScreenHeight - aScreen.mHeight * aScale) / 2, aScale);
-	if (theInput.mPage)
-		aTiles.push_back(Tile{ aTile.mSource, aTile.mDest, Kind::MenuScene });
-	if (theInput.mMirrored)
-		aTiles.push_back(Tile{ aTile.mSource, aTile.mDest, Kind::Mirrored });
+	if (theInput.mSurround != SURROUND_NONE && theInput.mSurroundAtRight)
+	{
+		// against the window's right edge, as tall as the window but for room for nothing else on its left
+		Input anInput = theInput;
+		anInput.mSafeArea.mWidth = theInput.mScreenWidth - aSafe.mX;
+		anInput.mBackdrop = Box{};
+		anInput.mSurround = SURROUND_NONE;	// put in below
+		double aRightScale = 0, aX = 0, aY = 0;
+		std::vector<Tile> aPlaced;
+		if (!PlaceScreen(anInput, aPlaced, aRightScale, aX, aY))
+			return {};
+		for (const Tile& aPlacedTile : aPlaced)
+			if (aPlacedTile.mKind == Kind::Screen)
+				aTile = aPlacedTile;
+	}
+	if (theInput.mSurround != SURROUND_NONE)
+		aTiles.push_back(Tile{ aTile.mSource, aTile.mDest, Kind::Surround, theInput.mSurround });
 	aTiles.push_back(aTile);
+	if (theInput.mTitle)
+		aTiles.push_back(Tile{ aTile.mSource, aTile.mDest, Kind::Title });
 	return aTiles;
 }
 

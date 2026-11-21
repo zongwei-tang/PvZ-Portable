@@ -1462,6 +1462,22 @@ MemoryImage* LawnApp::PhoneBackdrop()
 	return aBackdrop;
 }
 
+// What goes on around a board without a backdrop of the house: the Zen Garden's and the aquarium's picture, the Tree of
+// Wisdom's sky and hill; nothing for the others
+int LawnApp::PhoneSurroundOfBoard()
+{
+	if (mBoard == nullptr)
+		return PhoneLayout::SURROUND_NONE;
+	switch (mBoard->mBackground)
+	{
+	case BackgroundType::BACKGROUND_GREENHOUSE:
+	case BackgroundType::BACKGROUND_MUSHROOM_GARDEN:
+	case BackgroundType::BACKGROUND_ZOMBIQUARIUM:	return PhoneLayout::SURROUND_GARDEN;
+	case BackgroundType::BACKGROUND_TREEOFWISDOM:	return PhoneLayout::SURROUND_TREE;
+	default:										return PhoneLayout::SURROUND_NONE;
+	}
+}
+
 void LawnApp::UpdatePhoneLayout()
 {
 	if (!mGLInterface || !mWindow)
@@ -1494,6 +1510,20 @@ void LawnApp::UpdatePhoneLayout()
 	auto BackdropPiece = [](const PhoneLayout::Tile& theTile, MemoryImage* theImage, const PhoneLayout::Box& theBackdrop)
 	{
 		double aScaleX = theTile.mDest.mWidth / theTile.mSource.mWidth, aScaleY = theTile.mDest.mHeight / theTile.mSource.mHeight;
+		if (theTile.mMirrored)
+		{
+			// mirrored at an end of the image: whole pixels from that end, the window rectangle grown away from the mirror
+			double aPixels = std::ceil(theTile.mSource.mWidth - 1e-6);
+			bool aLeftEnd = theTile.mSource.mX - theBackdrop.mX < 0.5;
+			double aSourceX = aLeftEnd ? 0 : theBackdrop.mWidth - aPixels;
+			double aWidth = aPixels * aScaleX;
+			double aDestX = aLeftEnd ? theTile.mDest.Right() - aWidth : theTile.mDest.mX;
+			PresentationTile aPiece{ FRect(aSourceX, std::floor(theTile.mSource.mY - theBackdrop.mY), aPixels, std::ceil(theTile.mSource.mHeight)),
+				FRect(aDestX, theTile.mDest.mY, aWidth, std::ceil(theTile.mSource.mHeight) * aScaleY) };
+			aPiece.mImage = theImage;
+			aPiece.mMirror = true;
+			return aPiece;
+		}
 		double aLeft = std::floor(theTile.mSource.mX - theBackdrop.mX), aTop = std::floor(theTile.mSource.mY - theBackdrop.mY);
 		double aRight = std::ceil(theTile.mSource.Right() - theBackdrop.mX), aBottom = std::ceil(theTile.mSource.Bottom() - theBackdrop.mY);
 		PresentationTile aPiece{ FRect(aLeft, aTop, aRight - aLeft, aBottom - aTop),
@@ -1514,6 +1544,8 @@ void LawnApp::UpdatePhoneLayout()
 		MemoryImage* aBackdrop = PhoneBackdrop();
 		if (aBackdrop != nullptr)
 			anInput.mBackdrop = PhoneLayout::Box{ -static_cast<double>(BOARD_OFFSET), 0, static_cast<double>(aBackdrop->mWidth), static_cast<double>(aBackdrop->mHeight) };
+		else
+			anInput.mSurround = PhoneSurroundOfBoard();	// no house: the board's own picture going on (the aquarium, ...)
 
 		// on a conveyor belt the packets on it, each where it is along the belt (they ride to the left, 50 apart, from x 91)
 		bool aConveyor = mBoard->HasConveyorBeltSeedBank();
@@ -1543,6 +1575,7 @@ void LawnApp::UpdatePhoneLayout()
 			anInput.mMenuButton = PhoneLayout::Box{ static_cast<double>(aMenu.mX), aTop, static_cast<double>(aMenu.mWidth), aMenu.mY + aMenu.mHeight - aTop };
 		}
 		anInput.mDarkWeather = IsStormyNightLevel();
+		anInput.mBeyond = true;
 		if (mBoard->HasProgressMeter())
 			anInput.mMeter = PhoneLayout::Box{ PhoneLayoutDraw::METER_X, PhoneLayoutDraw::METER_Y, PhoneLayoutDraw::METER_WIDTH, PhoneLayoutDraw::METER_HEIGHT };
 
@@ -1561,7 +1594,8 @@ void LawnApp::UpdatePhoneLayout()
 				// which takes none either)
 				aPiece.mOverlay = static_cast<int>(aTile.mKind);
 				aPiece.mOverlayIndex = aTile.mIndex;
-				aPiece.mNoTap = aTile.TakesNoTap() || !aTile.TakesTaps();
+				aPiece.mNoTap = aTile.TakesNoTap();
+				aPiece.mTapThrough = !aTile.TakesTaps();
 			}
 			aTiles.push_back(aPiece);
 		}
@@ -1579,21 +1613,28 @@ void LawnApp::UpdatePhoneLayout()
 		anInput.mScreenHeight = aWindowHeight;
 		anInput.mSafeArea = aSafeBox;
 		anInput.mLawn = aScreenBox;
-		// pages (the almanac, the lists of mini-games) over the main menu's scenery, or over the lawn in a level; the store
-		// with its background mirrored
-		anInput.mPage = GetDialog(Dialogs::DIALOG_ALMANAC) != nullptr || (mChallengeScreen != nullptr && mChallengeScreen->mVisible);
-		anInput.mMirrored = !anInput.mPage && GetDialog(Dialogs::DIALOG_STORE) != nullptr;
-		MemoryImage* aBackdrop = anInput.mMirrored ? nullptr : PhoneBackdrop();
+		// what goes on around it: pages (the almanac, the lists of mini-games, an award) over the main menu's scenery (or
+		// over the lawn in a level); the store with its fence; the main menu with its scenery (and its achievements' and
+		// Zombatar's); the Zen Garden with its picture; a zombie's note with the picture behind it
+		bool aStore = GetDialog(Dialogs::DIALOG_STORE) != nullptr;
+		bool aPage = !aStore && (GetDialog(Dialogs::DIALOG_ALMANAC) != nullptr || (mChallengeScreen != nullptr && mChallengeScreen->mVisible) ||
+			(mAwardScreen != nullptr && mAwardScreen->mAwardType != AwardType::AWARD_HELP_ZOMBIENOTE && mAwardScreen->mAwardType != AwardType::AWARD_CREDITS_ZOMBIENOTE));
+		bool aNote = mAwardScreen != nullptr && !aPage && !aStore;
+		int aBoardSurround = mBoard != nullptr ? PhoneSurroundOfBoard() : PhoneLayout::SURROUND_NONE;
+		bool aGarden = aBoardSurround != PhoneLayout::SURROUND_NONE;
+		bool aMenu = mBoard == nullptr && mGameSelector && mGameSelector->mVisible && !mTitleScreen;
+		anInput.mSurround = mCreditScreen ? PhoneLayout::SURROUND_CREDITS : aStore ? PhoneLayout::SURROUND_STORE : aPage ? PhoneLayout::SURROUND_PAGE : aNote ? PhoneLayout::SURROUND_NOTE :
+			aGarden && !aPage ? aBoardSurround : aMenu ? PhoneLayout::SURROUND_MENU : PhoneLayout::SURROUND_NONE;
+		anInput.mSurroundAtRight = anInput.mSurround == PhoneLayout::SURROUND_STORE || anInput.mSurround == PhoneLayout::SURROUND_MENU;
+		anInput.mTitle = mTitleScreen && mTitleScreen->ShowsTitle();
+		MemoryImage* aBackdrop = aStore ? nullptr : PhoneBackdrop();
 		if (aBackdrop != nullptr)
 		{
 			anInput.mBackdrop = PhoneLayout::Box{ static_cast<double>(mBoard->mX - BOARD_OFFSET), static_cast<double>(mBoard->mY),
 				static_cast<double>(aBackdrop->mWidth), static_cast<double>(aBackdrop->mHeight) };
-			if (mBoard->StageHasPool())
-				anInput.mBackdropRight = mBoard->mX;	// the image has no water: only what is left of the lawn
 		}
 		anInput.mDarkWeather = mBoard != nullptr && IsStormyNightLevel();
-		anInput.mMenuScene = mBoard == nullptr && mGameSelector && mGameSelector->mVisible && !mTitleScreen && !GetDialog(Dialogs::DIALOG_STORE) &&
-			!GetDialog(Dialogs::DIALOG_ALMANAC);
+		anInput.mBeyond = mBoard != nullptr && !aPage;
 		for (const PhoneLayout::Tile& aTile : PhoneLayout::ComputeFramed(anInput))
 		{
 			if (aTile.mKind == PhoneLayout::Kind::Backdrop)
@@ -1602,11 +1643,12 @@ void LawnApp::UpdatePhoneLayout()
 				continue;
 			}
 			PresentationTile aPiece = ToPresentation(aTile);
-			aPiece.mNoTap = !aTile.TakesTaps();
+			aPiece.mNoTap = aTile.TakesNoTap();
+			aPiece.mTapThrough = !aTile.TakesTaps();
 			if (aTile.Overlay())
 			{
 				aPiece.mOverlay = static_cast<int>(aTile.mKind);
-				aPiece.mOverlayIndex = aTile.mKind == PhoneLayout::Kind::Mirrored && IsNight() ? 1 : 0;
+				aPiece.mOverlayIndex = aTile.mIndex;
 			}
 			aTiles.push_back(aPiece);
 		}

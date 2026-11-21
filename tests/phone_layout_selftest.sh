@@ -14,7 +14,9 @@
 #
 # Phones: iphone15, iphonese, iphone15promax (all by default). Levels: adventure-1-1, adventure-1-3, survival-day,
 # survival-day-10-packets, survival-night, survival-pool, survival-fog, survival-roof, adventure-1-10, adventure-2-10,
-# adventure-4-10 (conveyor belts, the last in a stormy night; all by default).
+# adventure-4-10 (conveyor belts, the last in a stormy night), and only looked at: wallnut-bowling, slot-machine,
+# beghouled, zombiquarium, whack-a-zombie, last-stand, vasebreaker, i-zombie, tree-of-wisdom, adventure-5-10, zombies-won (the
+# zombies winning a level; all by default).
 #
 # The game needs main.pak and properties/ in build-phone/ (git ignores the folder). Its saves go to
 # build-phone/selftest-save/, made anew for each run.

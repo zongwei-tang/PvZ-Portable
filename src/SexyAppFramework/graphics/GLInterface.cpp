@@ -1451,7 +1451,7 @@ bool GLInterface::MapWindowToLogical(double& theX, double& theY) const
 	{
 		const PresentationTile& aTile = *anItr;
 		const FRect& d = aTile.mDest;
-		if (aTile.mImage != nullptr || aTile.mBlur)
+		if (aTile.mImage != nullptr || aTile.mBlur || aTile.mTapThrough)
 			continue;
 		if (aTile.mNoTap && theX >= d.mX && theX < d.mX + d.mWidth && theY >= d.mY && theY < d.mY + d.mHeight)
 			break;	// it takes the tap, and nothing under it gets it
@@ -1757,7 +1757,13 @@ void GLInterface::PresentTiles()
 			GfxFlush();
 			gDrawState = GfxDrawState{};
 			SexyTransform2D aTransform;
-			aTransform.Scale(static_cast<float>(aTile.mDest.mWidth / aTile.mSource.mWidth), static_cast<float>(aTile.mDest.mHeight / aTile.mSource.mHeight));
+			if (aTile.mMirror)
+			{
+				aTransform.Translate(static_cast<float>(-aTile.mSource.mWidth), 0);
+				aTransform.Scale(static_cast<float>(-aTile.mDest.mWidth / aTile.mSource.mWidth), static_cast<float>(aTile.mDest.mHeight / aTile.mSource.mHeight));
+			}
+			else
+				aTransform.Scale(static_cast<float>(aTile.mDest.mWidth / aTile.mSource.mWidth), static_cast<float>(aTile.mDest.mHeight / aTile.mSource.mHeight));
 			aTransform.Translate(static_cast<float>(aTile.mDest.mX), static_cast<float>(aTile.mDest.mY));
 			Rect aSource(static_cast<int>(aTile.mSource.mX), static_cast<int>(aTile.mSource.mY), static_cast<int>(aTile.mSource.mWidth),
 				static_cast<int>(aTile.mSource.mHeight));
@@ -1972,6 +1978,25 @@ void GLInterface::BltTransformed(Image* theImage, const Rect* theClipRect,
 
 	if (!mTransformStack.empty())
 	{
+		// the clip rectangle is where the drawing is, before the transform: where it goes in the window
+		Rect aClip;
+		if (theClipRect != nullptr)
+		{
+			const SexyMatrix3& m = mTransformStack.back();
+			float aLeft = 1e9f, aTop = 1e9f, aRight = -1e9f, aBottom = -1e9f;
+			for (int i = 0; i < 4; i++)
+			{
+				SexyVector2 p = m * SexyVector2(static_cast<float>(theClipRect->mX + (i % 2) * theClipRect->mWidth),
+					static_cast<float>(theClipRect->mY + (i / 2) * theClipRect->mHeight));
+				aLeft = std::min(aLeft, p.x);
+				aTop = std::min(aTop, p.y);
+				aRight = std::max(aRight, p.x);
+				aBottom = std::max(aBottom, p.y);
+			}
+			aClip = Rect(static_cast<int>(std::floor(std::max(aLeft, -1e8f))), static_cast<int>(std::floor(std::max(aTop, -1e8f))),
+				static_cast<int>(std::ceil(std::min(aRight, 1e8f) - std::max(aLeft, -1e8f))), static_cast<int>(std::ceil(std::min(aBottom, 1e8f) - std::max(aTop, -1e8f))));
+			theClipRect = &aClip;
+		}
 		if (theX != 0 || theY != 0)
 		{
 			SexyTransform2D t;

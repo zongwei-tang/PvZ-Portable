@@ -192,6 +192,10 @@ struct PresentationTile
 	bool					mNoTap = false;
 	// the piece of the logical screen blurred and dimmed, as a background around it; no tap goes to it
 	bool					mBlur = false;
+	// only drawn: a tap goes to what is under it
+	bool					mTapThrough = false;
+	// an image drawn mirrored left to right
+	bool					mMirror = false;
 };
 
 class GLInterface : public NativeDisplay

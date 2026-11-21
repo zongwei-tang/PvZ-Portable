@@ -60,6 +60,8 @@ public:
 	void		SetLabel(std::string_view theNewLabel, MessageStyle theMessageStyle);
 	void				Update();
 	void				Draw(Sexy::Graphics* g);
+	void				GetLayout(int& thePosX, int& thePosY, int& theTextOffsetY, int& theRectHeight, int& theMinAlpha, Sexy::Color& theColor, bool& theFadeOut);
+	bool				GetBand(int& theY, int& theHeight);
 	void				ClearReanim();
 	void		ClearLabel();
 	inline bool			IsBeingDisplayed() { return mDuration != 0; }
