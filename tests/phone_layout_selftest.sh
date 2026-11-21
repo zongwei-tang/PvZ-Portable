@@ -1,7 +1,8 @@
 #!/bin/bash
-# The phone layout tested in the running game, on a Mac: the window takes the size of a phone in landscape, and the game
+# The phone layout tested in the running game, on a Mac or on Linux (headless there with xvfb-run): the window takes the size of a phone in landscape, and the game
 # plays some levels by itself (src/Lawn/System/PhoneLayoutSelfTest.h). Prints a report, also kept in
-# build-phone/selftest-report.txt, and exits 1 when a check failed.
+# build-phone/selftest-report.txt, and exits 1 when a check failed. A picture of the window in each level goes to
+# build-phone/screenshots/<phone>-<level>.png, to look at.
 #
 #   tests/phone_layout_selftest.sh build    build build-phone/pvz-portable with the self-test in it
 #   tests/phone_layout_selftest.sh run [phone...] [level...]
@@ -27,6 +28,12 @@ build() {
 	cmake --build "$BUILD" --target pvz-portable phone-layout-test
 }
 
+# Without a display (Linux in a container or on a server), the game runs in xvfb-run, on Mesa's software OpenGL
+RUN_WRAP=()
+if [ "$(uname)" = Linux ] && [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && command -v xvfb-run >/dev/null; then
+	RUN_WRAP=(xvfb-run -a -s "-screen 0 1920x1080x24")
+fi
+
 # name, points wide and high, safe area x,y,w,h (iOS gives both sides the inset of the Dynamic Island, and 21 at the
 # bottom for the home indicator)
 phone() {
@@ -51,6 +58,7 @@ run() {
 		exit 2
 	fi
 	: > "$REPORT"
+	mkdir -p "$BUILD/screenshots"
 	local status=0
 	for name in ${phones:-iphone15 iphonese iphone15promax}; do
 		read -r screen safe <<<"$(phone "$name")"
@@ -59,7 +67,8 @@ run() {
 		mkdir -p "$BUILD/selftest-save"
 		SDL_AUDIO_DRIVER=dummy PVZP_PHONE_LAYOUT=1 PVZP_SELFTEST=1 PVZP_SELFTEST_SCREEN="$screen" PVZP_SELFTEST_SAFE="$safe" \
 			PVZP_SELFTEST_LEVELS="$levels" PVZP_SELFTEST_REPORT="$REPORT" \
-			"$BUILD/pvz-portable" -savedir "$BUILD/selftest-save/" >/dev/null 2>"$BUILD/selftest-$name.log" || status=1
+			PVZP_SELFTEST_SHOTS="$BUILD/screenshots" PVZP_SELFTEST_PHONE="$name" \
+			${RUN_WRAP[@]+"${RUN_WRAP[@]}"} "$BUILD/pvz-portable" -savedir "$BUILD/selftest-save/" >/dev/null 2>"$BUILD/selftest-$name.log" || status=1
 		if ! tail -n 1 "$REPORT" | grep -q "checks,"; then
 			# the game ended before the test did: say why (no display inside a sandbox, a crash, ...)
 			echo "FAIL: the game ended before the test finished:" | tee -a "$REPORT"
@@ -88,7 +97,7 @@ show() {
 	mkdir -p "$BUILD/show-save"
 	SDL_AUDIO_DRIVER=dummy PVZP_PHONE_LAYOUT=1 PVZP_SELFTEST=1 PVZP_SELFTEST_SHOW=1 PVZP_SELFTEST_SCREEN="$screen" \
 		PVZP_SELFTEST_SAFE="$safe" PVZP_SELFTEST_LEVELS="$level" \
-		"$BUILD/pvz-portable" -savedir "$BUILD/show-save/" >/dev/null 2>&1
+		${RUN_WRAP[@]+"${RUN_WRAP[@]}"} "$BUILD/pvz-portable" -savedir "$BUILD/show-save/" >/dev/null 2>&1
 }
 
 case "${1:-}" in

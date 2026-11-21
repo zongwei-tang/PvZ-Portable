@@ -23,6 +23,7 @@
 #define __SEEDPACKET_H__
 
 #include <cstdint>
+#include <string>
 #include "GameObject.h"
 #include "../GameConstants.h"
 
@@ -48,6 +49,7 @@ public:
 
 	void                Update();
 	void                Draw(Graphics* g);
+	void                GetDrawState(float& thePercentDark, int& theGrayness, bool& theDrawCost);
 	void                MouseDown(int x, int y, int theClickCount);
 	bool                MouseHitTest(int theX, int theY, HitResult* theHitResult);
 	void                Deactivate();
@@ -86,6 +88,10 @@ public:
 };
 
 void				    SeedPacketDrawSeed(Graphics* g, float x, float y, SeedType theSeedType, SeedType theImitaterType, float theOffsetX, float theOffsetY, float theScale);
+int				    SeedPacketBackground(SeedType theSeedType, SeedType theImitaterType);	// the cel of IMAGE_SEEDS
+// where DrawSeedPacket draws the plant in a packet at scale 1: at this scale and offset (unscaled), if at all
+void				    SeedPacketSeedPlacement(SeedType theSeedType, SeedType theImitaterType, float& theScale, float& theOffsetX, float& theOffsetY, bool& theDrawInMiddle);
+std::string			    SeedPacketCostString(SeedType theSeedType, SeedType theImitaterType, bool theUseCurrentCost);
 void				    DrawSeedPacket(Graphics* g, float x, float y, SeedType theSeedType, SeedType theImitaterType, float thePercentDark, int theGrayness, bool theDrawCost, bool theUseCurrentCost);
 
 

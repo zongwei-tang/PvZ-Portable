@@ -6222,9 +6222,15 @@ void Board::DrawGameObjects(Graphics* g)
 		}
 	}
 	{
+		// the phone layout shows the packets and the shovel elsewhere: no tutorial arrow where the bank was
+		PvzpParticleSystem* aHiddenArrow = nullptr;
+		if ((mApp->PhoneLayoutMovesBank() || mApp->PhoneLayoutMovesShovel()) && (mTutorialState == TutorialState::TUTORIAL_LEVEL_1_PICK_UP_PEASHOOTER ||
+			mTutorialState == TutorialState::TUTORIAL_LEVEL_2_PICK_UP_SUNFLOWER || mTutorialState == TutorialState::TUTORIAL_MORESUN_PICK_UP_SUNFLOWER ||
+			mTutorialState == TutorialState::TUTORIAL_SHOVEL_PICKUP))
+			aHiddenArrow = mApp->ParticleTryToGet(mTutorialParticleID);
 		for (PvzpParticleSystem* aParticle : mApp->mEffectSystem->mParticleHolder->mParticleSystems)
 		{
-			if (aParticle->mDead)
+			if (aParticle->mDead || aParticle == aHiddenArrow)
 				continue;
 			if (!aParticle->mIsAttachment)
 			{
@@ -6575,7 +6581,7 @@ bool Board::ProgressMeterHasFlags()
 
 void Board::DrawProgressMeter(Graphics* g)
 {
-	if (!HasProgressMeter())
+	if (!HasProgressMeter() || mApp->PhoneLayoutMovesMeter())
 		return;
 
 	g->DrawImageCel(Sexy::IMAGE_FLAGMETER, 600, 575, 0);
@@ -6905,7 +6911,7 @@ void Board::DrawShovel(Graphics* g)
 {
 	if (mApp->mGameMode != GameMode::GAMEMODE_CHALLENGE_ZEN_GARDEN && mApp->mGameMode != GameMode::GAMEMODE_TREE_OF_WISDOM)
 	{
-		if (mShowShovel)
+		if (mShowShovel && !mApp->PhoneLayoutMovesShovel())
 		{
 			Rect aShovelRect = GetShovelButtonRect();
 			g->DrawImage(Sexy::IMAGE_SHOVELBANK, aShovelRect.mX, aShovelRect.mY);
@@ -7178,7 +7184,8 @@ void Board::DrawTopRightUI(Graphics* g)
 		g->SetColorizeImages(true);
 		g->SetColor(GetFlashingColor(mMainCounter, 75));
 	}
-	mMenuButton->Draw(g);
+	if (!mApp->PhoneLayoutMovesMenu())
+		mMenuButton->Draw(g);
 	g->SetColorizeImages(false);
 
 	if (mStoreButton && mApp->mGameMode != GameMode::GAMEMODE_CHALLENGE_LAST_STAND)
@@ -7224,7 +7231,7 @@ void Board::DrawUIBottom(Graphics* g)
 
 	if (mApp->mGameScene != GameScenes::SCENE_ZOMBIES_WON)
 	{
-		if (mSeedBank->BeginDraw(g))
+		if (!mApp->PhoneLayoutMovesBank() && mSeedBank->BeginDraw(g))
 		{
 			mSeedBank->Draw(g);
 			mSeedBank->EndDraw(g);

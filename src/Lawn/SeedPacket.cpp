@@ -286,26 +286,14 @@ void SeedPacketDrawSeed(Graphics* g, float x, float y, SeedType theSeedType, See
 	}
 }
 
-void DrawSeedPacket(Graphics* g, float x, float y, SeedType theSeedType, SeedType theImitaterType, float thePercentDark, int theGrayness, bool theDrawCost, bool theUseCurrentCost)
+int SeedPacketBackground(SeedType theSeedType, SeedType theImitaterType)
 {
 	SeedType aSeedType = theSeedType;
 	if (aSeedType == SeedType::SEED_IMITATER && theImitaterType != SeedType::SEED_NONE)
 	{
 		aSeedType = theImitaterType;
 	}
-
-	if (theGrayness != 255)
-	{
-		g->SetColor(Color(theGrayness, theGrayness, theGrayness));
-		g->SetColorizeImages(true);
-	}
-	else if (thePercentDark > 0)
-	{
-		g->SetColor(Color(128, 128, 128, 255));
-		g->SetColorizeImages(true);
-	}
-
-	int aPacketBackground =
+	return
 		theSeedType == SeedType::SEED_IMITATER ? 0 :
 		Plant::IsUpgrade(aSeedType) ? 1 :
 		theSeedType == SeedType::SEED_BEGHOULED_BUTTON_CRATER ? 3 :
@@ -314,14 +302,14 @@ void DrawSeedPacket(Graphics* g, float x, float y, SeedType theSeedType, SeedTyp
 		theSeedType == SeedType::SEED_SLOT_MACHINE_DIAMOND ? 6 :
 		theSeedType == SeedType::SEED_ZOMBIQUARIUM_SNORKLE ? 7 :
 		theSeedType == SeedType::SEED_ZOMBIQUARIUM_TROPHY ? 8 : 2;
+}
 
-	if (g->mScaleX > 1)
+void SeedPacketSeedPlacement(SeedType theSeedType, SeedType theImitaterType, float& theScale, float& theOffsetX, float& theOffsetY, bool& theDrawInMiddle)
+{
+	SeedType aSeedType = theSeedType;
+	if (aSeedType == SeedType::SEED_IMITATER && theImitaterType != SeedType::SEED_NONE)
 	{
-		PvzpDrawImageCelScaledF(g, Sexy::IMAGE_SEEDPACKET_LARGER, x, y, 0, 0, g->mScaleX * 0.5f, g->mScaleY * 0.5f);
-	}
-	else
-	{
-		PvzpDrawImageCelScaledF(g, Sexy::IMAGE_SEEDS, x, y, aPacketBackground, 0, g->mScaleX, g->mScaleY);
+		aSeedType = theImitaterType;
 	}
 
 	float aScale = 0.5f;
@@ -543,8 +531,68 @@ void DrawSeedPacket(Graphics* g, float x, float y, SeedType theSeedType, SeedTyp
 		aOffsetX = 52.0f;
 		aOffsetY = 58.0f;
 	}
+	theScale = aScale;
+	theOffsetX = aOffsetX;
+	theOffsetY = aOffsetY + 1.0f;
+	theDrawInMiddle = aDrawSeedInMiddle;
+}
+
+std::string SeedPacketCostString(SeedType theSeedType, SeedType theImitaterType, bool theUseCurrentCost)
+{
+	SeedType aSeedType = theSeedType;
+	if (aSeedType == SeedType::SEED_IMITATER && theImitaterType != SeedType::SEED_NONE)
+	{
+		aSeedType = theImitaterType;
+	}
+
+	std::string aCostStr;
+	if (gLawnApp->mBoard && gLawnApp->mBoard->PlantUsesAcceleratedPricing(aSeedType))
+	{
+		if (theUseCurrentCost)
+		{
+			aCostStr = std::to_string(gLawnApp->mBoard->GetCurrentPlantCost(theSeedType, theImitaterType));
+		}
+		else
+		{
+			aCostStr = std::format("{}+", Plant::GetCost(theSeedType, theImitaterType));
+		}
+	}
+	else
+	{
+		aCostStr = std::to_string(Plant::GetCost(theSeedType, theImitaterType));
+	}
+	return aCostStr;
+}
+
+void DrawSeedPacket(Graphics* g, float x, float y, SeedType theSeedType, SeedType theImitaterType, float thePercentDark, int theGrayness, bool theDrawCost, bool theUseCurrentCost)
+{
+	if (theGrayness != 255)
+	{
+		g->SetColor(Color(theGrayness, theGrayness, theGrayness));
+		g->SetColorizeImages(true);
+	}
+	else if (thePercentDark > 0)
+	{
+		g->SetColor(Color(128, 128, 128, 255));
+		g->SetColorizeImages(true);
+	}
+
+	int aPacketBackground = SeedPacketBackground(theSeedType, theImitaterType);
+
+	if (g->mScaleX > 1)
+	{
+		PvzpDrawImageCelScaledF(g, Sexy::IMAGE_SEEDPACKET_LARGER, x, y, 0, 0, g->mScaleX * 0.5f, g->mScaleY * 0.5f);
+	}
+	else
+	{
+		PvzpDrawImageCelScaledF(g, Sexy::IMAGE_SEEDS, x, y, aPacketBackground, 0, g->mScaleX, g->mScaleY);
+	}
+
+	float aScale, aOffsetX, aOffsetY;
+	bool aDrawSeedInMiddle;
+	SeedPacketSeedPlacement(theSeedType, theImitaterType, aScale, aOffsetX, aOffsetY, aDrawSeedInMiddle);
 	aOffsetX = g->mScaleX * aOffsetX;
-	aOffsetY = g->mScaleY * (aOffsetY + 1.0f);
+	aOffsetY = g->mScaleY * aOffsetY;
 	if (aDrawSeedInMiddle)
 	{
 		SeedPacketDrawSeed(g, x, y, theSeedType, theImitaterType, aOffsetX, aOffsetY, aScale);
@@ -566,23 +614,7 @@ void DrawSeedPacket(Graphics* g, float x, float y, SeedType theSeedType, SeedTyp
 
 	if (theDrawCost)
 	{
-		std::string aCostStr;
-		if (gLawnApp->mBoard && gLawnApp->mBoard->PlantUsesAcceleratedPricing(aSeedType))
-		{
-			if (theUseCurrentCost)
-			{
-				aCostStr = std::to_string(gLawnApp->mBoard->GetCurrentPlantCost(theSeedType, theImitaterType));
-			}
-			else
-			{
-				aCostStr = std::format("{}+", Plant::GetCost(theSeedType, theImitaterType));
-			}
-		}
-		else
-		{
-			aCostStr = std::to_string(Plant::GetCost(theSeedType, theImitaterType));
-		}
-
+		std::string aCostStr = SeedPacketCostString(theSeedType, theImitaterType, theUseCurrentCost);
 		_Font* aTextFont = Sexy::FONT_PICO129;
 		int aTextOffsetX = 32 - aTextFont->StringWidth(aCostStr);
 		int aTextOffsetY = aTextFont->GetAscent() + 54;
@@ -606,7 +638,9 @@ void DrawSeedPacket(Graphics* g, float x, float y, SeedType theSeedType, SeedTyp
 	g->SetColorizeImages(false);
 }
 
-void SeedPacket::Draw(Graphics* g)
+// How the packet is drawn now: the part of it darkened from the top while it recharges, its grayness (255: none), and
+// whether its cost is shown
+void SeedPacket::GetDrawState(float& thePercentDark, int& theGrayness, bool& theDrawCost)
 {
 	float aPercentDark = 0.0f;
 	if (!mActive)
@@ -621,6 +655,62 @@ void SeedPacket::Draw(Graphics* g)
 		}
 	}
 
+	SeedType aUseSeedType = mPacketType;
+	if (mPacketType == SeedType::SEED_IMITATER && mImitaterType != SeedType::SEED_NONE)
+	{
+		aUseSeedType = mImitaterType;
+	}
+
+	bool aDrawCost = true;
+	if (mBoard->HasConveyorBeltSeedBank() || mApp->IsSlotMachineLevel())
+	{
+		aDrawCost = false;
+	}
+	int aCost = mBoard->GetCurrentPlantCost(mPacketType, mImitaterType);
+
+	int aGrayness = 255;
+	if ((mApp->mGameMode == GameMode::GAMEMODE_CHALLENGE_BEGHOULED && !mActive) ||
+		(mApp->mGameMode == GameMode::GAMEMODE_CHALLENGE_BEGHOULED_TWIST && !mActive))
+	{
+		aGrayness = 64;
+	}
+	else if (mApp->mGameScene != GameScenes::SCENE_PLAYING)
+	{
+		aGrayness = mBoard->mSeedBank->mCutSceneDarken;
+		aPercentDark = 0.0f;
+	}
+	else if (mBoard->mTutorialState == TutorialState::TUTORIAL_LEVEL_1_PICK_UP_PEASHOOTER && mBoard->mTutorialTimer == -1 && mPacketType == SeedType::SEED_PEASHOOTER)
+	{
+		aGrayness = GetFlashingColor(mBoard->mMainCounter, 75).mRed;
+	}
+	else if (mBoard->mTutorialState == TutorialState::TUTORIAL_LEVEL_2_PICK_UP_SUNFLOWER && mPacketType == SeedType::SEED_SUNFLOWER)
+	{
+		aGrayness = GetFlashingColor(mBoard->mMainCounter, 75).mRed;
+	}
+	else if (mBoard->mTutorialState == TutorialState::TUTORIAL_MORESUN_PICK_UP_SUNFLOWER && mPacketType == SeedType::SEED_SUNFLOWER)
+	{
+		aGrayness = GetFlashingColor(mBoard->mMainCounter, 75).mRed;
+	}
+	else if (mBoard->mTutorialState == TutorialState::TUTORIAL_WHACK_A_ZOMBIE_PICK_SEED)
+	{
+		aGrayness = GetFlashingColor(mBoard->mMainCounter, 75).mRed;
+	}
+	else if (mApp->mEasyPlantingCheat)
+	{
+		aPercentDark = 0.0f;
+	}
+	else if ((!mBoard->CanTakeSunMoney(aCost) && aDrawCost) || aPercentDark > 1.0f || !mBoard->PlantingRequirementsMet(aUseSeedType))
+	{
+		aGrayness = 128;
+	}
+
+	thePercentDark = aPercentDark;
+	theGrayness = aGrayness;
+	theDrawCost = aDrawCost;
+}
+
+void SeedPacket::Draw(Graphics* g)
+{
 	if (mSlotMachineCountDown > 0)
 	{
 		int aOffsetY = FloatRoundToInt(-mHeight * mSlotMachiningPosition);
@@ -633,55 +723,10 @@ void SeedPacket::Draw(Graphics* g)
 	}
 	else
 	{
-		SeedType aUseSeedType = mPacketType;
-		if (mPacketType == SeedType::SEED_IMITATER && mImitaterType != SeedType::SEED_NONE)
-		{
-			aUseSeedType = mImitaterType;
-		}
-
-		bool aDrawCost = true;
-		if (mBoard->HasConveyorBeltSeedBank() || mApp->IsSlotMachineLevel())
-		{
-			aDrawCost = false;
-		}
-		int aCost = mBoard->GetCurrentPlantCost(mPacketType, mImitaterType);
-
-		int aGrayness = 255;
-		if ((mApp->mGameMode == GameMode::GAMEMODE_CHALLENGE_BEGHOULED && !mActive) ||
-			(mApp->mGameMode == GameMode::GAMEMODE_CHALLENGE_BEGHOULED_TWIST && !mActive))
-		{
-			aGrayness = 64;
-		}
-		else if (mApp->mGameScene != GameScenes::SCENE_PLAYING)
-		{
-			aGrayness = mBoard->mSeedBank->mCutSceneDarken;
-			aPercentDark = 0.0f;
-		}
-		else if (mBoard->mTutorialState == TutorialState::TUTORIAL_LEVEL_1_PICK_UP_PEASHOOTER && mBoard->mTutorialTimer == -1 && mPacketType == SeedType::SEED_PEASHOOTER)
-		{
-			aGrayness = GetFlashingColor(mBoard->mMainCounter, 75).mRed;
-		}
-		else if (mBoard->mTutorialState == TutorialState::TUTORIAL_LEVEL_2_PICK_UP_SUNFLOWER && mPacketType == SeedType::SEED_SUNFLOWER)
-		{
-			aGrayness = GetFlashingColor(mBoard->mMainCounter, 75).mRed;
-		}
-		else if (mBoard->mTutorialState == TutorialState::TUTORIAL_MORESUN_PICK_UP_SUNFLOWER && mPacketType == SeedType::SEED_SUNFLOWER)
-		{
-			aGrayness = GetFlashingColor(mBoard->mMainCounter, 75).mRed;
-		}
-		else if (mBoard->mTutorialState == TutorialState::TUTORIAL_WHACK_A_ZOMBIE_PICK_SEED)
-		{
-			aGrayness = GetFlashingColor(mBoard->mMainCounter, 75).mRed;
-		}
-		else if (mApp->mEasyPlantingCheat)
-		{
-			aPercentDark = 0.0f;
-		}
-		else if ((!mBoard->CanTakeSunMoney(aCost) && aDrawCost) || aPercentDark > 1.0f || !mBoard->PlantingRequirementsMet(aUseSeedType))
-		{
-			aGrayness = 128;
-		}
-
+		float aPercentDark;
+		int aGrayness;
+		bool aDrawCost;
+		GetDrawState(aPercentDark, aGrayness, aDrawCost);
 		DrawSeedPacket(g, mOffsetX, 0.0f, mPacketType, mImitaterType, aPercentDark, aGrayness, aDrawCost, true);
 	}
 }

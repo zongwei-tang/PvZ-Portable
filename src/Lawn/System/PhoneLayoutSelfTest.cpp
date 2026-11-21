@@ -10,7 +10,7 @@
 #include "LawnApp.h"
 #include "Lawn/Board.h"
 #include "Lawn/CursorObject.h"
-#include "Lawn/CutScene.h"
+#include "Lawn/Cutscene.h"
 #include "Lawn/Plant.h"
 #include "Lawn/SeedPacket.h"
 #include "Lawn/System/PlayerInfo.h"
@@ -18,6 +18,7 @@
 #include "Lawn/Widget/GameButton.h"
 #include "Lawn/Widget/SeedChooserScreen.h"
 #include "graphics/GLInterface.h"
+#include "imagelib/ImageLib.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -73,6 +74,8 @@ struct State
 	int						mTransitions = 0, mPlayTicks = 0, mTiledTicks = 0;
 	std::map<std::string, int> mOffReasons;
 	bool					mShow = false;		// only into the first level, then the player plays
+	std::string				mShotDir;			// where the pictures of the window go, one per level; none without
+	std::string				mPhone;				// the name of the phone, for the names of the pictures
 };
 
 State gState;
@@ -196,7 +199,8 @@ void CheckPicture(LawnApp* theApp, const GLInterface::FrameCapture& theRef, cons
 	for (size_t i = 0; i < aTiles.size(); i++)
 	{
 		const PresentationTile& t = aTiles[i];
-		Log("  tile {}{}: ({:.1f},{:.1f} {:.1f}x{:.1f}) -> window ({:.1f},{:.1f} {:.1f}x{:.1f}), x{:.3f}", i, t.mImage ? " (backdrop image)" : "",
+		Log("  tile {}{}: ({:.1f},{:.1f} {:.1f}x{:.1f}) -> window ({:.1f},{:.1f} {:.1f}x{:.1f}), x{:.3f}", i,
+			t.mImage ? " (backdrop image)" : t.mOverlay == 2 ? " (card)" : t.mOverlay == 3 ? " (sun counter)" : t.mOverlay == 4 ? " (progress meter)" : t.mOverlay == 5 ? " (menu button)" : t.mOverlay == 6 ? " (shovel)" : "",
 			t.mSource.mX, t.mSource.mY, t.mSource.mWidth, t.mSource.mHeight, t.mDest.mX, t.mDest.mY, t.mDest.mWidth,
 			t.mDest.mHeight, t.mDest.mWidth / t.mSource.mWidth);
 	}
@@ -205,13 +209,42 @@ void CheckPicture(LawnApp* theApp, const GLInterface::FrameCapture& theRef, cons
 	if (!theTiled.mTiled || theRef.mTiled || theRef.mWindow.empty() || theTiled.mLogical.empty())
 		return;
 
-	// 1. the texture holds the same picture as the letterboxed screen (a few frames apart: some things move)
+	// 1. the texture holds the same picture as the letterboxed screen (a few frames apart: some things move), but for
+	// what the layout draws into the window instead: the seed bank (all of it around the packets and the sun counter),
+	// the shovel, the progress meter, the menu button
+	std::vector<FRect> aMoved;
+	FRect aBank(10000, 10000, 0, 0);
+	for (const PresentationTile& t : aTiles)
+	{
+		if (t.mOverlay == 0)
+			continue;
+		aMoved.push_back(FRect(t.mSource.mX - 3, t.mSource.mY - 3, t.mSource.mWidth + 6, t.mSource.mHeight + 6));
+		if (t.mOverlay == 2 || t.mOverlay == 3)
+		{
+			double aRight = std::max(aBank.mX + aBank.mWidth, t.mSource.mX + t.mSource.mWidth);
+			aBank.mX = std::min(aBank.mX, t.mSource.mX);
+			aBank.mY = 0;
+			aBank.mWidth = aRight - aBank.mX;
+			aBank.mHeight = 90;
+		}
+	}
+	if (aBank.mWidth > 0)
+		aMoved.push_back(FRect(aBank.mX - 12, 0, aBank.mWidth + 24, aBank.mHeight));
+	auto IsMoved = [&](double x, double y)
+	{
+		for (const FRect& r : aMoved)
+			if (x >= r.mX && x < r.mX + r.mWidth && y >= r.mY && y < r.mY + r.mHeight)
+				return true;
+		return false;
+	};
 	int aSamples = 0, aDiffer = 0, aDifferFlipped = 0, aDifferMirrored = 0;
 	long long aTotal = 0;
 	for (double y = 2; y < 600; y += 4)
 	{
 		for (double x = 2; x < 800; x += 4)
 		{
+			if (IsMoved(x, y) || IsMoved(x, 600 - y) || IsMoved(800 - x, y))
+				continue;
 			Rgb aRef = Letterboxed(theRef, x, y);
 			int d = Difference(Logical(theTiled, x, y), aRef);
 			aSamples++;
@@ -242,10 +275,16 @@ void CheckPicture(LawnApp* theApp, const GLInterface::FrameCapture& theRef, cons
 				double wy = t.mDest.mY + 1.5 + (t.mDest.mHeight - 3) * fy;
 				double lx = t.mSource.mX + (wx - t.mDest.mX) * t.mSource.mWidth / t.mDest.mWidth;
 				double ly = t.mSource.mY + (wy - t.mDest.mY) * t.mSource.mHeight / t.mDest.mHeight;
+				// only where this tile is on top: a later one may lie over it (the menu button over the game's screen)
+				bool aCovered = false;
+				for (size_t j = i + 1; j < aTiles.size() && !aCovered; j++)
+					aCovered = InAnyTile(std::vector<PresentationTile>{ aTiles[j] }, wx, wy, 1.5);
+				if (aCovered)
+					continue;
 				Rgb aShown = Window(theTiled, wx, wy);
 				aTileSamples++;
 				aDark += Brightness(aShown) < 16;
-				if (t.mImage != nullptr)
+				if (t.mImage != nullptr || t.mOverlay != 0)
 					continue;
 				// the nearest texel or one beside it: the window is filtered, the texel picked is the nearest
 				int aBest = 255;
@@ -256,12 +295,18 @@ void CheckPicture(LawnApp* theApp, const GLInterface::FrameCapture& theRef, cons
 				aTileDiffer += aBest > 40;
 			}
 		}
-		double aTileFraction = static_cast<double>(aTileDiffer) / aTileSamples;
-		double aDarkFraction = static_cast<double>(aDark) / aTileSamples;
+		double aTileFraction = static_cast<double>(aTileDiffer) / std::max(1, aTileSamples);
+		double aDarkFraction = static_cast<double>(aDark) / std::max(1, aTileSamples);
 		if (t.mImage != nullptr)
 		{
 			Log("  tile {} (the backdrop): {:.1f}% black", i, aDarkFraction * 100);
 			Check(aDarkFraction < 0.25, std::format("tile {} (the backdrop) is drawn", i));
+			continue;
+		}
+		if (t.mOverlay != 0)
+		{
+			Log("  tile {} (drawn into the window): {:.1f}% black", i, aDarkFraction * 100);
+			Check(aDarkFraction < 0.25, std::format("tile {} (drawn into the window) is drawn", i));
 			continue;
 		}
 		Log("  tile {}: {:.1f}% of points differ from the texture, {:.1f}% black", i, aTileFraction * 100, aDarkFraction * 100);
@@ -288,8 +333,44 @@ void CheckPicture(LawnApp* theApp, const GLInterface::FrameCapture& theRef, cons
 	Log("  {:.1f}% of the window is lit; {:.1f}% of the window is outside the tiles, {:.1f}% of that lit",
 		100.0 * aAllLit / aAll, 100.0 * aOutside / aAll, aOutside ? 100.0 * aOutsideLit / aOutside : 0.0);
 	Check(aOutside == 0 || aOutsideLit * 100 < aOutside, "the window is black outside the tiles");
+
+	// 4. nothing large is black right of the safe area's left edge (left of it is the notch or the Dynamic Island)
+	double aSafeLeft = gState.mHasSafe ? gState.mSafe.x : 0;
+	int aRightOfSafe = 0, aBlack = 0;
+	for (double y = 1; y < theTiled.mPointHeight; y += 2)
+	{
+		for (double x = aSafeLeft + 1; x < theTiled.mPointWidth; x += 2)
+		{
+			aRightOfSafe++;
+			aBlack += Brightness(Window(theTiled, x, y)) <= 12;
+		}
+	}
+	Log("  {:.2f}% of the window right of the safe area's left edge is black", aRightOfSafe ? 100.0 * aBlack / aRightOfSafe : 0.0);
+	Check(aBlack * 100 < aRightOfSafe * 3, "nothing large is black right of the safe area's left edge");
 	Check(aAllLit * 100 > aAll * 85, "the game covers most of the window");
 	(void)theApp;
+}
+
+// the window as captured, as a PNG picture: build-phone/screenshots/<phone>-<level>.png
+void SaveWindow(const GLInterface::FrameCapture& c, const std::string& theLevel)
+{
+	if (gState.mShotDir.empty() || c.mWindow.empty() || c.mWindowWidth <= 0 || c.mWindowHeight <= 0)
+		return;
+	ImageLib::Image anImage;
+	anImage.mWidth = c.mWindowWidth;
+	anImage.mHeight = c.mWindowHeight;
+	anImage.mBits = std::make_unique<uint32_t[]>(static_cast<size_t>(c.mWindowWidth) * c.mWindowHeight);
+	for (int y = 0; y < c.mWindowHeight; y++)
+	{
+		const unsigned char* aRow = &c.mWindow[static_cast<size_t>(c.mWindowHeight - 1 - y) * c.mWindowWidth * 4];
+		uint32_t* anOut = &anImage.mBits[static_cast<size_t>(y) * c.mWindowWidth];
+		for (int x = 0; x < c.mWindowWidth; x++)
+			anOut[x] = 0xFF000000u | (aRow[x * 4] << 16) | (aRow[x * 4 + 1] << 8) | aRow[x * 4 + 2];
+	}
+	std::string aName = theLevel;
+	std::replace(aName.begin(), aName.end(), ' ', '-');
+	std::string aPath = std::format("{}/{}-{}.png", gState.mShotDir, gState.mPhone.empty() ? std::string("phone") : gState.mPhone, aName);
+	Log("  picture of the window: {}", ImageLib::WritePNGImage(aPath, &anImage) ? aPath : std::string("could not be written"));
 }
 
 // --- taps through the tiles ----------------------------------------------------------------------------------------
@@ -300,8 +381,8 @@ bool ToWindow(LawnApp* theApp, double theX, double theY, double& theWindowX, dou
 	for (auto anItr = aTiles.rbegin(); anItr != aTiles.rend(); ++anItr)
 	{
 		const PresentationTile& t = *anItr;
-		if (t.mImage != nullptr)
-			continue;	// the backdrop: in the pixels of its image, and no tap goes to it
+		if (t.mImage != nullptr || t.mNoTap)
+			continue;	// the backdrop (in the pixels of its image), and what takes no tap
 		if (theX < t.mSource.mX || theX >= t.mSource.mX + t.mSource.mWidth || theY < t.mSource.mY || theY >= t.mSource.mY + t.mSource.mHeight)
 			continue;
 		theWindowX = t.mDest.mX + (theX - t.mSource.mX) * t.mDest.mWidth / t.mSource.mWidth;
@@ -402,6 +483,10 @@ void Init(LawnApp* theApp)
 	gState.mLevels = ParseLevels(std::getenv("PVZP_SELFTEST_LEVELS"));
 	if (const char* aShow = std::getenv("PVZP_SELFTEST_SHOW"))
 		gState.mShow = aShow[0] == '1';
+	if (const char* aShots = std::getenv("PVZP_SELFTEST_SHOTS"))
+		gState.mShotDir = aShots;
+	if (const char* aPhone = std::getenv("PVZP_SELFTEST_PHONE"))
+		gState.mPhone = aPhone;
 	if (const char* aReport = std::getenv("PVZP_SELFTEST_REPORT"))
 	{
 		gState.mReportPath = aReport;
@@ -618,6 +703,7 @@ void Update(LawnApp* theApp)
 			GLInterface::FrameCapture aTiled = std::move(aGL->mCapture);
 			aGL->mCapture = GLInterface::FrameCapture{};
 			CheckPicture(theApp, gState.mRef, aTiled);
+			SaveWindow(aTiled, gState.mLevels[gState.mLevel - 1].mName);
 			gState.mRef = GLInterface::FrameCapture{};
 			Goto(Step::PickPacket);
 		}
@@ -767,7 +853,17 @@ void Update(LawnApp* theApp)
 		break;
 
 	case Step::Watch:
-		// ten seconds of play, for the switches between tiled and letterboxed
+		// ten seconds of play, for the switches between tiled and letterboxed; near their end a second picture, with
+		// the progress meter shown (it shows from the first wave on) and the packet planted recharging
+		if (gState.mTicks == 900 && aBoard)
+			aBoard->mProgressMeterWidth = std::max(aBoard->mProgressMeterWidth, 60);
+		else if (gState.mTicks == 950 && !gState.mShotDir.empty())
+			aGL->mCapture.mRequested = true;
+		else if (gState.mTicks > 950 && aGL->mCapture.mDone)
+		{
+			SaveWindow(aGL->mCapture, gState.mLevels[gState.mLevel - 1].mName + " later");
+			aGL->mCapture = GLInterface::FrameCapture{};
+		}
 		if (gState.mTicks > 1000)
 		{
 			Check(gState.mTransitions == 0, std::format("the layout stays tiled through ten seconds of play ({} switches)", gState.mTransitions));

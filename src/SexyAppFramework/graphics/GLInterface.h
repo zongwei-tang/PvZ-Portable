@@ -25,6 +25,7 @@
 #ifndef __GLINTERFACE_H__
 #define __GLINTERFACE_H__
 
+#include <functional>
 #include <mutex>
 #include <set>
 #include "Common.h"
@@ -184,6 +185,11 @@ struct PresentationTile
 	FRect					mSource;
 	FRect					mDest;
 	MemoryImage*			mImage = nullptr;
+	// not 0: drawn by GLInterface::mDrawOverlay into the window instead of being a piece of the logical screen; a tap
+	// on it still goes to mSource, unless mNoTap
+	int						mOverlay = 0;
+	int						mOverlayIndex = -1;
+	bool					mNoTap = false;
 };
 
 class GLInterface : public NativeDisplay
@@ -247,6 +253,8 @@ public:
 	// window point through the topmost tile of the logical screen under it: false without tiles, and a point under none
 	// maps far outside the logical screen.
 	void					SetPresentationTiles(std::vector<PresentationTile> theTiles);
+	// draws an overlay tile into the window, in window points, after the tiles before it
+	std::function<void(const PresentationTile&)> mDrawOverlay;
 	bool					MapWindowToLogical(double& theX, double& theY) const;
 	bool					IsTiled() const { return !mTiles.empty(); }
 	const std::vector<PresentationTile>& GetPresentationTiles() const { return mTiles; }

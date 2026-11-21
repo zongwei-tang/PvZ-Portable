@@ -14,29 +14,9 @@ namespace PhoneLayout
 namespace
 {
 
-Tile MakeTile(const Box& theSource, double theX, double theY, double theScale)
+Tile MakeTile(const Box& theSource, double theX, double theY, double theScale, Kind theKind = Kind::Screen)
 {
-	return Tile{ theSource, Box{ theX, theY, theSource.mWidth * theScale, theSource.mHeight * theScale } };
-}
-
-bool Within(const Box& theInner, const Box& theOuter)
-{
-	return theInner.mX >= theOuter.mX && theInner.mY >= theOuter.mY && theInner.Right() <= theOuter.Right() && theInner.Bottom() <= theOuter.Bottom();
-}
-
-// The two pieces a packet is shown in, side by side as a card: its picture, and its cost from the strip below it
-void PacketPieces(const Box& thePacket, Box& thePicture, Box& theCost)
-{
-	thePicture = Box{ thePacket.mX, thePacket.mY, thePacket.mWidth, PACKET_PICTURE_HEIGHT };
-	theCost = Box{ thePacket.mX + PACKET_COST_X, thePacket.mY + PACKET_PICTURE_HEIGHT, PACKET_COST_WIDTH, thePacket.mHeight - PACKET_PICTURE_HEIGHT };
-}
-
-// The two pieces of the sun counter, side by side: the sun, and the number below it
-void SunPieces(const Box& theCounter, Box& theSun, Box& theNumber)
-{
-	double aSunHeight = std::min(SUN_PICTURE_HEIGHT, theCounter.mHeight);
-	theSun = Box{ theCounter.mX, theCounter.mY, theCounter.mWidth, aSunHeight };
-	theNumber = Box{ theCounter.mX, theCounter.mY + aSunHeight, theCounter.mWidth, theCounter.mHeight - aSunHeight };
+	return Tile{ theSource, Box{ theX, theY, theSource.mWidth * theScale, theSource.mHeight * theScale }, theKind };
 }
 
 }
@@ -48,14 +28,12 @@ std::vector<Tile> Compute(const Input& theInput)
 	const Box& aLawn = theInput.mLawn;
 	if (theInput.mScreenHeight <= 0 || theInput.mScreenWidth / theInput.mScreenHeight < MIN_ASPECT || aSafe.Empty() || aLawn.Empty())
 		return aTiles;
-	if (theInput.mBankRight <= aLawn.mX || theInput.mBankRight >= aLawn.Right())
-		return aTiles;
 
 	// The game's screen as tall as the window, against the right edge of the safe area, unless that leaves too little
-	// room for the packets; then smaller, and centred in the height.
+	// room for the cards; then smaller, and centred in the height.
 	double aScale = theInput.mScreenHeight / aLawn.mHeight;
-	if (aLawn.mWidth * aScale > aSafe.mWidth - MIN_COLUMN_WIDTH - COLUMN_GAP)
-		aScale = (aSafe.mWidth - MIN_COLUMN_WIDTH - COLUMN_GAP) / aLawn.mWidth;
+	if (aLawn.mWidth * aScale > aSafe.mWidth - MIN_COLUMN_WIDTH - GAP)
+		aScale = (aSafe.mWidth - MIN_COLUMN_WIDTH - GAP) / aLawn.mWidth;
 	if (aScale <= 0)
 		return aTiles;
 	double aLawnX = aSafe.Right() - aLawn.mWidth * aScale;
@@ -65,7 +43,9 @@ std::vector<Tile> Compute(const Input& theInput)
 		return MakeTile(theSource, aLawnX + (theSource.mX - aLawn.mX) * aScale, aLawnY + (theSource.mY - aLawn.mY) * aScale, aScale);
 	};
 
-	// The backdrop behind it all, in line with the game's screen, over as much of the window as it covers
+	// The backdrop left and right of the game's screen, in line with it, over as much of the window as it covers. The
+	// image ends a little right of the safe area's left edge: its part left of the game's screen (the house) is stretched
+	// across to it, so that no black shows there.
 	if (!theInput.mBackdrop.Empty())
 	{
 		const Box& aBack = theInput.mBackdrop;
@@ -75,73 +55,101 @@ std::vector<Tile> Compute(const Input& theInput)
 		double aBottom = std::min(aBack.Bottom(), aLawn.mY + (theInput.mScreenHeight - aLawnY) / aScale);
 		if (aRight > aLeft && aBottom > aTop)
 		{
-			Tile aTile = InPlace(Box{ aLeft, aTop, aRight - aLeft, aBottom - aTop });
-			aTile.mBackdrop = true;
-			aTiles.push_back(aTile);
+			if (aLeft < aLawn.mX)
+			{
+				Tile aTile = InPlace(Box{ aLeft, aTop, aLawn.mX - aLeft, aBottom - aTop });
+				aTile.mKind = Kind::Backdrop;
+				double aStretchTo = std::max(0.0, aSafe.mX);
+				if (aTile.mDest.mX > aStretchTo)
+				{
+					aTile.mDest.mX = aStretchTo;
+					aTile.mDest.mWidth = aLawnX - aStretchTo;
+				}
+				aTiles.push_back(aTile);
+			}
+			if (aRight > aLawn.Right())
+			{
+				Tile aTile = InPlace(Box{ aLawn.Right(), aTop, aRight - aLawn.Right(), aBottom - aTop });
+				aTile.mKind = Kind::Backdrop;
+				aTiles.push_back(aTile);
+			}
 		}
 	}
 
-	// The game's screen without the seed bank, in two pieces: right of mBankRight all of it (the top strip there holds
-	// the menu button), left of it only below the bank. Where the bank was, the backdrop shows.
-	double aBankBottom = std::clamp(theInput.mBankBottom, aLawn.mY, aLawn.Bottom());
-	Box aRight{ theInput.mBankRight, aLawn.mY, aLawn.Right() - theInput.mBankRight, aLawn.mHeight };
-	Box aLeft{ aLawn.mX, aBankBottom, theInput.mBankRight - aLawn.mX, aLawn.Bottom() - aBankBottom };
-	aTiles.push_back(InPlace(aRight));
-	if (!aLeft.Empty())
-		aTiles.push_back(InPlace(aLeft));
-	if (!theInput.mMenuButton.Empty() && !Within(theInput.mMenuButton, aRight))
-		aTiles.push_back(InPlace(theInput.mMenuButton));
+	// The game's screen, which the game draws without the seed bank and what the layout puts elsewhere
+	aTiles.push_back(InPlace(aLawn));
 
-	// The packets as cards, picture and cost side by side, in one column down the left edge of the safe area
-	double aColumnRight = aSafe.mX + EDGE_MARGIN;
-	if (!theInput.mPackets.empty())
-	{
-		double aCardWidth = 0, aCardHeight = 0;
-		for (const Box& aPacket : theInput.mPackets)
-		{
-			Box aPicture, aCost;
-			PacketPieces(aPacket, aPicture, aCost);
-			aCardWidth = std::max(aCardWidth, aPicture.mWidth + aCost.mWidth);
-			aCardHeight = std::max(aCardHeight, aPicture.mHeight);
-		}
-		size_t n = theInput.mPackets.size();
-		// down to the bottom of the screen, past the home indicator, as the phone versions have them
-		double aCardScale = std::min({ MAX_CARD_SCALE, (theInput.mScreenHeight - aSafe.mY - 2 * EDGE_MARGIN) / (n * aCardHeight + (n - 1) * CARD_GAP),
-			(aLawnX - COLUMN_GAP - aSafe.mX - EDGE_MARGIN) / aCardWidth });
-		if (aCardScale <= 0)
-			return {};
-		double aY = aSafe.mY + EDGE_MARGIN;
-		for (const Box& aPacket : theInput.mPackets)
-		{
-			Box aPicture, aCost;
-			PacketPieces(aPacket, aPicture, aCost);
-			double aX = aSafe.mX + EDGE_MARGIN;
-			aTiles.push_back(MakeTile(aPicture, aX, aY, aCardScale));
-			aTiles.push_back(MakeTile(aCost, aX + aPicture.mWidth * aCardScale, aY + (aPicture.mHeight - aCost.mHeight) * aCardScale, aCardScale));
-			aY += (aCardHeight + CARD_GAP) * aCardScale;
-		}
-		aColumnRight = aSafe.mX + EDGE_MARGIN + aCardWidth * aCardScale;
-	}
+	// The scale of the cards: as large as the phone versions have them, and smaller when they would not fit down the
+	// window (past the home indicator, as the phone versions have them) or left of the game's screen
+	size_t n = theInput.mPackets.size();
+	double aCardScale = MAX_CARD_HEIGHT * theInput.mScreenHeight / CARD_HEIGHT;
+	if (n > 0)
+		aCardScale = std::min(aCardScale, (theInput.mScreenHeight - aSafe.mY - 2 * EDGE_MARGIN - (n - 1) * CARD_GAP) / (n * CARD_HEIGHT));
+	aCardScale = std::min(aCardScale, (aLawnX - GAP - aSafe.mX - EDGE_MARGIN) / CARD_WIDTH);
+	if (aCardScale <= 0)
+		return {};
+	double aColumnRight = aSafe.mX + EDGE_MARGIN + (n > 0 ? CARD_WIDTH * aCardScale : 0);
 
-	// Along the top, right of the cards: the sun counter, its sun and number side by side, then the shovel
-	double aBarX = aColumnRight + COLUMN_GAP;
+	// Along the top, right of the cards: the sun counter, then the shovel, all as high as the sun counter
+	double aBarX = aColumnRight + GAP;
 	double aBarY = aSafe.mY + EDGE_MARGIN;
-	if (!theInput.mSunCounter.Empty())
+	double aBarHeight = SUN_COUNTER_HEIGHT * aCardScale;
+	Tile aSunCounter;
+	bool aHasSun = !theInput.mSunCounter.Empty();
+	if (aHasSun)
 	{
-		Box aSun, aNumber;
-		SunPieces(theInput.mSunCounter, aSun, aNumber);
-		double aBarScale = BAR_HEIGHT / aSun.mHeight;
-		aTiles.push_back(MakeTile(aSun, aBarX, aBarY, aBarScale));
-		aBarX += aSun.mWidth * aBarScale;
-		if (!aNumber.Empty())
-		{
-			aTiles.push_back(MakeTile(aNumber, aBarX, aBarY + (aSun.mHeight - aNumber.mHeight) / 2 * aBarScale, aBarScale));
-			aBarX += aNumber.mWidth * aBarScale;
-		}
-		aBarX += COLUMN_GAP;
+		aSunCounter = Tile{ theInput.mSunCounter, Box{ aBarX, aBarY, SUN_COUNTER_WIDTH * aCardScale, aBarHeight }, Kind::SunCounter };
+		aBarX += aSunCounter.mDest.mWidth + GAP;
 	}
 	if (!theInput.mShovel.Empty())
-		aTiles.push_back(MakeTile(theInput.mShovel, aBarX, aBarY, BAR_HEIGHT / theInput.mShovel.mHeight));
+	{
+		Tile aShovel = MakeTile(theInput.mShovel, aBarX, aBarY, aBarHeight / theInput.mShovel.mHeight, Kind::Shovel);
+		aTiles.push_back(aShovel);
+		aBarX += aShovel.mDest.mWidth + GAP;
+	}
+
+	// The menu button in the top right corner, larger than in the game's screen, as high as the sun counter and the
+	// margin above it (MIN_MENU_HEIGHT at the least, to be easy to tap), over where the game's screen has it
+	double aMenuLeft = aSafe.Right() - EDGE_MARGIN, aMenuTop = aBarY, aMenuHeight = 0;
+	if (!theInput.mMenuButton.Empty())
+	{
+		Tile aInPlace = InPlace(theInput.mMenuButton);
+		double aRightEdge = std::min(aInPlace.mDest.Right(), aSafe.Right());
+		double aMenuScale = std::max({ aInPlace.mDest.mHeight, aBarY - aSafe.mY + aBarHeight, MIN_MENU_HEIGHT }) / theInput.mMenuButton.mHeight;
+		Tile aMenu = MakeTile(theInput.mMenuButton, aRightEdge - theInput.mMenuButton.mWidth * aMenuScale, aSafe.mY, aMenuScale, Kind::Menu);
+		aTiles.push_back(aMenu);
+		aMenuLeft = aMenu.mDest.mX;
+		aMenuTop = aMenu.mDest.mY;
+		aMenuHeight = aMenu.mDest.mHeight;
+	}
+
+	// The progress meter left of the menu button, as high as the button (or the sun counter) and centred on it; smaller when
+	// that leaves too little room right of the shovel, and not shown when it would be too small to read
+	if (!theInput.mMeter.Empty())
+	{
+		double aMeterScale = std::max(aBarHeight, aMenuHeight) / theInput.mMeter.mHeight;
+		double aRoom = aMenuLeft - GAP - aBarX;
+		double aPlanned = aMeterScale;
+		if (theInput.mMeter.mWidth * aMeterScale > aRoom)
+			aMeterScale = aRoom / theInput.mMeter.mWidth;
+		if (aMeterScale > aPlanned * 0.5)
+		{
+			double aHeight = theInput.mMeter.mHeight * aMeterScale;
+			double aY = aMenuHeight > 0 ? aMenuTop + (aMenuHeight - aHeight) / 2 : aBarY;
+			aTiles.push_back(MakeTile(theInput.mMeter, aMenuLeft - GAP - theInput.mMeter.mWidth * aMeterScale, std::max(aBarY, aY), aMeterScale, Kind::Meter));
+		}
+	}
+	if (aHasSun)
+		aTiles.push_back(aSunCounter);
+
+	// The cards, one column down the left edge of the safe area from its top
+	double aY = aSafe.mY + EDGE_MARGIN;
+	for (size_t i = 0; i < n; i++)
+	{
+		aTiles.push_back(Tile{ theInput.mPackets[i], Box{ aSafe.mX + EDGE_MARGIN, aY, CARD_WIDTH * aCardScale, CARD_HEIGHT * aCardScale }, Kind::Card,
+			static_cast<int>(i) });
+		aY += CARD_HEIGHT * aCardScale + CARD_GAP;
+	}
 	return aTiles;
 }
 
@@ -150,8 +158,10 @@ bool WindowToGame(const std::vector<Tile>& theTiles, double theX, double theY, d
 	for (auto anItr = theTiles.rbegin(); anItr != theTiles.rend(); ++anItr)
 	{
 		const Tile& aTile = *anItr;
-		if (aTile.mBackdrop || !aTile.mDest.Contains(theX, theY))
+		if (aTile.mKind == Kind::Backdrop || !aTile.mDest.Contains(theX, theY))
 			continue;
+		if (aTile.TakesNoTap())
+			return false;
 		theGameX = aTile.mSource.mX + (theX - aTile.mDest.mX) * aTile.mSource.mWidth / aTile.mDest.mWidth;
 		theGameY = aTile.mSource.mY + (theY - aTile.mDest.mY) * aTile.mSource.mHeight / aTile.mDest.mHeight;
 		return true;

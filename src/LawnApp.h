@@ -169,6 +169,13 @@ public:
 	bool							PhoneLayoutApplies();
 	const char*						mPhoneLayoutOff = "";	// why PhoneLayoutApplies() last said no
 	void							UpdatePhoneLayout();
+	bool							mDrawingPhoneOverlay = false;	// the phone layout draws its overlay (Lawn/System/PhoneLayoutDraw.h)
+	// the frame drawn is in the phone layout, which draws the seed bank (as cards and the sun counter), the shovel, the
+	// progress meter and the menu button where it puts them: the game does not draw them in its screen
+	bool							PhoneLayoutMovesBank();
+	bool							PhoneLayoutMovesShovel();
+	bool							PhoneLayoutMovesMeter();
+	bool							PhoneLayoutMovesMenu();
 	void							DoUserDialog();
 	void							FinishUserDialog(bool isYes);
 	void							DoCreateUserDialog();

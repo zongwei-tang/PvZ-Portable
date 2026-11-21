@@ -1451,6 +1451,8 @@ bool GLInterface::MapWindowToLogical(double& theX, double& theY) const
 		const FRect& d = aTile.mDest;
 		if (aTile.mImage != nullptr)
 			continue;
+		if (aTile.mNoTap && theX >= d.mX && theX < d.mX + d.mWidth && theY >= d.mY && theY < d.mY + d.mHeight)
+			break;	// it takes the tap, and nothing under it gets it
 		if (theX < d.mX || theX >= d.mX + d.mWidth || theY < d.mY || theY >= d.mY + d.mHeight || d.mWidth <= 0 || d.mHeight <= 0)
 			continue;
 		theX = aTile.mSource.mX + (theX - d.mX) * aTile.mSource.mWidth / d.mWidth;
@@ -1479,7 +1481,7 @@ bool GLInterface::EnsureTileTarget()
 	double aScale = 1;
 	for (const PresentationTile& aTile : mTiles)
 	{
-		if (aTile.mSource.mWidth > 0 && aTile.mImage == nullptr)
+		if (aTile.mSource.mWidth > 0 && aTile.mImage == nullptr && aTile.mOverlay == 0)
 			aScale = std::max(aScale, aTile.mDest.mWidth / aTile.mSource.mWidth * aPixelWidth / aWindowWidth);
 	}
 	aScale = std::min(aScale, 3.0);
@@ -1602,6 +1604,16 @@ void GLInterface::PresentTiles()
 	float aHalfTexelU = 0.5f / mTileTextureWidth, aHalfTexelV = 0.5f / mTileTextureHeight;
 	for (const PresentationTile& aTile : mTiles)
 	{
+		if (aTile.mOverlay != 0)
+		{
+			// drawn by the game into the window, through the transforms and clipping it sets up itself
+			GfxFlush();
+			gDrawState = GfxDrawState{};
+			if (mDrawOverlay)
+				mDrawOverlay(aTile);
+			GfxFlush();
+			continue;
+		}
 		if (aTile.mImage != nullptr)
 		{
 			// an image still alive (one deleted has left mImageSet), its piece scaled into the tile

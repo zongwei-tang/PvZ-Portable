@@ -39,6 +39,7 @@
 #include "Lawn/System/CloudSave.h"
 #include "Lawn/System/AppUpdater.h"
 #include "Lawn/System/PhoneLayout.h"
+#include "Lawn/System/PhoneLayoutDraw.h"
 #include "Lawn/System/SaveGame.h"
 #include "PvzpLib/PvzpDebug.h"
 #include "PvzpLib/PvzpFoley.h"
@@ -1400,6 +1401,36 @@ bool LawnApp::PhoneLayoutApplies()
 	return true;
 }
 
+static bool PhoneLayoutDraws(LawnApp* theApp, PhoneLayout::Kind theKind)
+{
+	if (theApp->mDrawingPhoneOverlay || !theApp->mGLInterface)
+		return false;
+	for (const PresentationTile& aTile : theApp->mGLInterface->GetPresentationTiles())
+		if (aTile.mOverlay == static_cast<int>(theKind))
+			return true;
+	return false;
+}
+
+bool LawnApp::PhoneLayoutMovesMeter()
+{
+	return PhoneLayoutDraws(this, PhoneLayout::Kind::Meter);
+}
+
+bool LawnApp::PhoneLayoutMovesMenu()
+{
+	return PhoneLayoutDraws(this, PhoneLayout::Kind::Menu);
+}
+
+bool LawnApp::PhoneLayoutMovesBank()
+{
+	return PhoneLayoutDraws(this, PhoneLayout::Kind::SunCounter) || PhoneLayoutDraws(this, PhoneLayout::Kind::Card);
+}
+
+bool LawnApp::PhoneLayoutMovesShovel()
+{
+	return PhoneLayoutDraws(this, PhoneLayout::Kind::Shovel);
+}
+
 void LawnApp::UpdatePhoneLayout()
 {
 	if (!mGLInterface || !mWindow)
@@ -1446,52 +1477,58 @@ void LawnApp::UpdatePhoneLayout()
 		if (aBackdrop != nullptr && aBackdrop->mWidth > 0 && aBackdrop->mHeight > 0)
 			anInput.mBackdrop = PhoneLayout::Box{ -static_cast<double>(BOARD_OFFSET), 0, static_cast<double>(aBackdrop->mWidth), static_cast<double>(aBackdrop->mHeight) };
 
-		double aFirstPacketX = aBank.mX + 83;
 		for (int i = 0; i < aBank.mNumPackets && i < SEEDBANK_MAX; i++)
 		{
 			const SeedPacket& aPacket = aBank.mSeedPackets[i];
-			// with a little margin: the highlight of a chosen packet reaches past it
-			anInput.mPackets.push_back(PhoneLayout::Box{ aBank.mX + aPacket.mX - 2.0, aBank.mY + aPacket.mY - 2.0,
-				aPacket.mWidth + 4.0, aPacket.mHeight + 4.0 });
-			aFirstPacketX = std::min(aFirstPacketX, static_cast<double>(aBank.mX + aPacket.mX));
+			anInput.mPackets.push_back(PhoneLayout::Box{ static_cast<double>(aBank.mX + aPacket.mX + aPacket.mOffsetX), static_cast<double>(aBank.mY + aPacket.mY),
+				static_cast<double>(aPacket.mWidth), static_cast<double>(aPacket.mHeight) });
 		}
-		anInput.mSunCounter = PhoneLayout::Box{ static_cast<double>(aBank.mX), 0, std::max(1.0, aFirstPacketX - 2.0 - aBank.mX),
-			static_cast<double>(aBank.mY + aBank.mHeight) };
-		double aBankRight = aBank.mX + aBank.mWidth;
+		anInput.mSunCounter = PhoneLayout::Box{ static_cast<double>(aBank.mX), static_cast<double>(aBank.mY), 80, static_cast<double>(aBank.mHeight) };
 		if (mBoard->mShowShovel)
 		{
 			Rect aShovel = mBoard->GetShovelButtonRect();
-			anInput.mShovel = PhoneLayout::Box{ static_cast<double>(aShovel.mX), static_cast<double>(std::max(0, aShovel.mY)),
-				static_cast<double>(aShovel.mWidth), static_cast<double>(aShovel.mHeight + std::min(0, aShovel.mY)) };
-			aBankRight = std::max(aBankRight, anInput.mShovel.Right());
+			anInput.mShovel = PhoneLayout::Box{ static_cast<double>(aShovel.mX), static_cast<double>(aShovel.mY),
+				static_cast<double>(aShovel.mWidth), static_cast<double>(aShovel.mHeight) };
 		}
-		anInput.mBankRight = aBankRight;
-		anInput.mBankBottom = aBank.mY + aBank.mHeight;
 		if (mBoard->mMenuButton && !mBoard->mMenuButton->mBtnNoDraw)
 		{
 			const GameButton& aMenu = *mBoard->mMenuButton;
 			double aTop = std::max(0, aMenu.mY);
 			anInput.mMenuButton = PhoneLayout::Box{ static_cast<double>(aMenu.mX), aTop, static_cast<double>(aMenu.mWidth), aMenu.mY + aMenu.mHeight - aTop };
 		}
+		if (mBoard->HasProgressMeter())
+			anInput.mMeter = PhoneLayout::Box{ PhoneLayoutDraw::METER_X, PhoneLayoutDraw::METER_Y, PhoneLayoutDraw::METER_WIDTH, PhoneLayoutDraw::METER_HEIGHT };
 
 		for (const PhoneLayout::Tile& aTile : PhoneLayout::Compute(anInput))
 		{
-			if (aTile.mBackdrop)
+			FRect aSource(aTile.mSource.mX, aTile.mSource.mY, aTile.mSource.mWidth, aTile.mSource.mHeight);
+			FRect aDest(aTile.mDest.mX, aTile.mDest.mY, aTile.mDest.mWidth, aTile.mDest.mHeight);
+			if (aTile.mKind == PhoneLayout::Kind::Backdrop)
 			{
 				// in the pixels of the image, whole ones, the window rectangle grown to match
-				double aScale = aTile.mDest.mWidth / aTile.mSource.mWidth;
+				double aScaleX = aTile.mDest.mWidth / aTile.mSource.mWidth, aScaleY = aTile.mDest.mHeight / aTile.mSource.mHeight;
 				double aLeft = std::floor(aTile.mSource.mX + BOARD_OFFSET), aTop = std::floor(aTile.mSource.mY);
 				double aRight = std::ceil(aTile.mSource.Right() + BOARD_OFFSET), aBottom = std::ceil(aTile.mSource.Bottom());
 				PresentationTile aPiece{ FRect(aLeft, aTop, aRight - aLeft, aBottom - aTop),
-					FRect(aTile.mDest.mX + (aLeft - BOARD_OFFSET - aTile.mSource.mX) * aScale, aTile.mDest.mY + (aTop - aTile.mSource.mY) * aScale,
-						(aRight - aLeft) * aScale, (aBottom - aTop) * aScale) };
+					FRect(aTile.mDest.mX + (aLeft - BOARD_OFFSET - aTile.mSource.mX) * aScaleX, aTile.mDest.mY + (aTop - aTile.mSource.mY) * aScaleY,
+						(aRight - aLeft) * aScaleX, (aBottom - aTop) * aScaleY) };
 				aPiece.mImage = aBackdrop;
 				aTiles.push_back(aPiece);
 				continue;
 			}
-			aTiles.push_back(PresentationTile{ FRect(aTile.mSource.mX, aTile.mSource.mY, aTile.mSource.mWidth, aTile.mSource.mHeight),
-				FRect(aTile.mDest.mX, aTile.mDest.mY, aTile.mDest.mWidth, aTile.mDest.mHeight) });
+			PresentationTile aPiece{ aSource, aDest };
+			if (aTile.Overlay())
+			{
+				// drawn by PhoneLayoutDraw into the window; a tap on a card goes to its packet, on the shovel or the menu
+				// button to it, and the sun counter and progress meter take taps and do nothing with them
+				aPiece.mOverlay = static_cast<int>(aTile.mKind);
+				aPiece.mOverlayIndex = aTile.mIndex;
+				aPiece.mNoTap = aTile.TakesNoTap();
+			}
+			aTiles.push_back(aPiece);
 		}
+		if (!mGLInterface->mDrawOverlay)
+			mGLInterface->mDrawOverlay = [this](const PresentationTile& theTile) { PhoneLayoutDraw::Overlay(this, theTile); };
 	}
 	mGLInterface->SetPresentationTiles(std::move(aTiles));	// none: letterboxed
 }

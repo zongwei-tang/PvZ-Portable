@@ -10,12 +10,16 @@
 #include <vector>
 
 // The layout of a level on a wide phone screen, after the phone versions of the game: the game's screen as tall as the
-// window and against its right side, with the house of the level's backdrop left of it; the seed packets as cards (the
-// picture, and the cost beside it) in a column down the left edge; along the top, right of the cards, the sun counter
-// (its sun and its number side by side) and the shovel; the menu button where it is, in the top right corner. Where the
-// seed bank was, the backdrop shows. The game still draws its 800x600 screen as everywhere else; this cuts it into tiles
-// and places them on the phone over the backdrop. A tap is mapped back through the topmost tile under it (not the
-// backdrop), so every part of the game handles it as before.
+// window and against the right side of the safe area, with the house of the level's backdrop left of it; the seed
+// packets as wide cards (the plant on the left, the cost in the bottom right corner) in one column down the left edge;
+// along the top, right of the cards, the sun counter (its sun beside its number) and the shovel; the progress meter
+// beside the menu button in the top right corner.
+//
+// The game still draws its 800x600 screen, but without the seed bank, the shovel, the progress meter and the menu
+// button, and the layout shows it in the window over the backdrop. Those the game draws into the window itself, at the
+// window's resolution, where the layout puts them (overlay tiles). A tap is mapped back through the topmost tile under
+// it: on a card to its packet, on the shovel or the menu button to it, on the game's screen to that place of it, so
+// every part of the game handles it as before.
 //
 // Only geometry, without the game, GL or SDL, so that tests can check it (tests/phone_layout_test.cpp).
 namespace PhoneLayout
@@ -34,13 +38,29 @@ struct Box
 	bool	Contains(double theX, double theY) const { return theX >= mX && theX < Right() && theY >= mY && theY < Bottom(); }
 };
 
-// A piece of the game's screen (mSource, in its 800x600 coordinates) and where it goes in the window (mDest, in window
-// points). Source and destination have the same aspect, so a tile is scaled alike in both directions.
+enum class Kind
+{
+	Screen,		// the game's screen (mSource in its 800x600 coordinates), scaled alike both ways
+	Backdrop,	// a piece of the backdrop image of the level (mSource in the game's coordinates all the same); no tap goes to it
+	// drawn into the window by the game:
+	Card,		// the card of packet mIndex; a tap on it goes to the packet (mSource)
+	SunCounter,	// the sun counter; it takes taps, and does nothing with them
+	Meter,		// the progress meter (mSource: where the game draws it in its screen); it takes taps, and does nothing with them
+	Menu,		// the menu button (mSource: where it is in the game's screen); a tap on it goes to the button
+	Shovel,		// the shovel in its bank (mSource: where it is in the game's screen); a tap on it goes to the shovel
+};
+
+// Where something goes in the window (mDest, in window points), and what of the game it shows or stands for (mSource,
+// in the game's coordinates).
 struct Tile
 {
 	Box		mSource;
 	Box		mDest;
-	bool	mBackdrop = false;	// a piece of the backdrop image (mSource in the game's coordinates all the same), which no tap goes to
+	Kind	mKind = Kind::Screen;
+	int		mIndex = -1;	// of the packet, for a card
+
+	bool	Overlay() const { return mKind != Kind::Screen && mKind != Kind::Backdrop; }
+	bool	TakesNoTap() const { return mKind == Kind::SunCounter || mKind == Kind::Meter; }
 };
 
 struct Input
@@ -49,38 +69,38 @@ struct Input
 	double				mScreenHeight = 0;
 	Box					mSafeArea;			// the part of the window clear of the notch or Dynamic Island, in points
 
-	Box					mLawn;				// the part of the game's screen to show, the lawn and the strip above it
+	Box					mLawn;				// the game's screen
 	Box					mBackdrop;			// where the backdrop image of the level lies, in the game's coordinates; empty without
-	double				mBankRight = 0;		// right of this the top strip holds nothing of the bank or the shovel
-	double				mBankBottom = 0;	// below this the lawn is clear of the bank
 
 	Box					mMenuButton;		// in the game's screen; empty when it is not shown
-	Box					mSunCounter;
+	Box					mSunCounter;		// empty without one
 	Box					mShovel;			// empty without a shovel
-	std::vector<Box>	mPackets;
+	Box					mMeter;				// the progress meter with its flags; empty when it is not shown
+	std::vector<Box>	mPackets;			// where the packets are (what a tap on a card goes to)
 };
 
 constexpr double	MIN_ASPECT = 1.65;			// narrower screens (iPad, 4:3 and 16:10) keep the 800x600 screen
-constexpr double	MIN_COLUMN_WIDTH = 96;		// points left of the game's screen for the packets, at the least
-constexpr double	COLUMN_GAP = 6;				// points between the cards and what is right of them
-constexpr double	CARD_GAP = 3;				// between the cards of the packets, in the game's units
-constexpr double	MAX_CARD_SCALE = 0.9;		// points per unit of the game's screen, at the most, for the cards of the packets
-constexpr double	BAR_HEIGHT = 36;			// points high, the sun counter and the shovel along the top
-// the pieces of a packet (its box, with a margin of 2 around the 50x70 packet): its picture above y 52, and its cost below,
-// the number of which ends at x 32 of the packet
-constexpr double	PACKET_PICTURE_HEIGHT = 52;
-constexpr double	PACKET_COST_X = 2;
-constexpr double	PACKET_COST_WIDTH = 34;
-constexpr double	SUN_PICTURE_HEIGHT = 61;	// of the sun counter, the sun; its number below
+constexpr double	MIN_COLUMN_WIDTH = 80;		// points left of the game's screen for the cards, at the least
 constexpr double	EDGE_MARGIN = 4;			// points between the controls and the edges of the safe area
+constexpr double	GAP = 5;					// points between the cards and what is right of them, and along the top
+constexpr double	CARD_GAP = 3;				// points between the cards
+// the cards and the sun counter in units of their own, drawn at one scale: at most MAX_CARD_HEIGHT of the window high,
+// less when the cards would not fit down the window
+constexpr double	CARD_WIDTH = 88;
+constexpr double	CARD_HEIGHT = 50;
+constexpr double	MAX_CARD_HEIGHT = 0.11;
+constexpr double	SUN_COUNTER_WIDTH = 118;
+constexpr double	SUN_COUNTER_HEIGHT = 42;
+constexpr double	MIN_MENU_HEIGHT = 36;		// points high, the menu button, at the least
 
-// The tiles, drawn in this order: the backdrop (when there is one), the game's screen in one or two pieces, the menu
-// button when those do not hold it, the packets (two tiles each), the sun counter (two tiles), the shovel. Empty when the screen is not wide enough for the layout to gain anything; the
-// game then shows its 800x600 screen as usual.
+// The tiles, drawn in this order: the backdrop (when there is one: its part left of the game's screen stretched across
+// to the safe area, then its part right of it), the game's screen, the shovel, the menu button, the progress meter, the
+// sun counter, the cards. Empty when the screen is not wide enough for the layout to gain anything; the game then shows
+// its 800x600 screen as usual.
 std::vector<Tile>	Compute(const Input& theInput);
 
 // The point of the game's screen under a window point, through the topmost tile there that is not the backdrop; false
-// when there is none.
+// when there is none, or when it is one that takes taps and does nothing with them.
 bool				WindowToGame(const std::vector<Tile>& theTiles, double theX, double theY, double& theGameX, double& theGameY);
 
 }

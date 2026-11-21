@@ -1,8 +1,10 @@
 /*
  * SPDX-License-Identifier: LGPL-3.0-or-later
  *
- * Tests of the phone layout (src/Lawn/System/PhoneLayout.h): the tiles stay on the screen and out of the notch, do
- * not overlap, keep their aspect, show every control whole, and taps map back to the right place of the game's screen.
+ * Tests of the phone layout (src/Lawn/System/PhoneLayout.h): the tiles stay on the screen and out of the notch, the
+ * controls do not overlap and are where the phone versions have them (the cards down the left, the sun counter and the
+ * shovel along the top, the progress meter and the menu button top right), nothing is black right of the safe area's
+ * left edge, and taps map back to the right place of the game's screen.
  * Built with -DPHONE_LAYOUT_TESTS=ON as phone-layout-test.
  */
 
@@ -64,17 +66,15 @@ Input GameInput(double theScreenWidth, double theScreenHeight, Box theSafe, int 
 	anInput.mSafeArea = theSafe;
 	anInput.mLawn = Box{ 0, 0, 800, 600 };
 	anInput.mBackdrop = Box{ -220, 0, 1400, 600 };
-	anInput.mBankBottom = 87;
-	double aShovelRight = theShovel ? anExtra + 456 + 70 : 0;
-	anInput.mBankRight = std::max(10.0 + 446 + anExtra, aShovelRight);
 	anInput.mMenuButton = Box{ 681, 0, 117, 36 };
-	anInput.mSunCounter = Box{ 10, 0, 83, 87 };
+	anInput.mSunCounter = Box{ 10, 0, 80, 87 };
+	anInput.mMeter = Box{ 580, 555, 180, 47 };
 	if (theShovel)
 		anInput.mShovel = Box{ static_cast<double>(anExtra + 456), 0, 70, 72 };
 	for (int i = 0; i < theNumPackets; i++)
 	{
 		int x = theNumPackets <= 7 ? i * 59 + 85 : theNumPackets == 8 ? i * 54 + 81 : theNumPackets == 9 ? i * 52 + 80 : i * 51 + 79;
-		anInput.mPackets.push_back(Box{ 10.0 + x - 2, 6, 54, 74 });
+		anInput.mPackets.push_back(Box{ 10.0 + x, 8, 50, 70 });
 	}
 	return anInput;
 }
@@ -83,7 +83,7 @@ Input GameInput(double theScreenWidth, double theScreenHeight, Box theSafe, int 
 int TopmostAt(const std::vector<Tile>& theTiles, double theX, double theY)
 {
 	for (int i = static_cast<int>(theTiles.size()) - 1; i >= 0; i--)
-		if (!theTiles[i].mBackdrop && theTiles[i].mDest.Contains(theX, theY))
+		if (theTiles[i].mKind != Kind::Backdrop && theTiles[i].mDest.Contains(theX, theY))
 			return i;
 	return -1;
 }
@@ -95,17 +95,24 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 	Check(!aTiles.empty(), theName + ": has a layout");
 	if (aTiles.empty())
 		return;
-
+	const Box& aSafe = theInput.mSafeArea;
 	Box aScreen{ 0, 0, theInput.mScreenWidth, theInput.mScreenHeight };
-	size_t aFirstLawn = (!aTiles.empty() && aTiles[0].mBackdrop) ? 1 : 0;
-	Check(aFirstLawn == (theInput.mBackdrop.Empty() ? 0u : 1u), theName + ": a backdrop exactly when the level has one");
+
+	// the order: the backdrop, the game's screen in one or two pieces, then the controls
+	size_t aFirstLawn = 0;
+	while (aFirstLawn < aTiles.size() && aTiles[aFirstLawn].mKind == Kind::Backdrop)
+		aFirstLawn++;
+	Check(theInput.mBackdrop.Empty() ? aFirstLawn == 0 : (aFirstLawn == 1 || aFirstLawn == 2), theName + ": a backdrop exactly when the level has one");
 	for (size_t i = aFirstLawn; i < aTiles.size(); i++)
-		Check(!aTiles[i].mBackdrop, theName + ": the backdrop comes first only");
-	// the game's screen in one piece, or two: the second below the bank, from the left edge
-	size_t aNumLawnTiles = aTiles.size() > aFirstLawn + 1 && std::abs(aTiles[aFirstLawn + 1].mSource.mX - theInput.mLawn.mX) < EPSILON &&
-		std::abs(aTiles[aFirstLawn + 1].mSource.mY - theInput.mBankBottom) < EPSILON ? 2 : 1;
-	size_t aFirstControl = aFirstLawn + aNumLawnTiles;
-	Check(aNumLawnTiles == 1 || aNumLawnTiles == 2, theName + ": the lawn is one or two tiles");
+		Check(aTiles[i].mKind != Kind::Backdrop, theName + ": the backdrop comes first only");
+	Check(aFirstLawn < aTiles.size() && aTiles[aFirstLawn].mKind == Kind::Screen && Same(aTiles[aFirstLawn].mSource, theInput.mLawn),
+		theName + ": the game's screen, whole, after the backdrop");
+	size_t aFirstControl = aFirstLawn + 1;
+	for (size_t i = aFirstControl; i < aTiles.size(); i++)
+		Check(aTiles[i].Overlay(), theName + ": after the game's screen only what is drawn into the window");
+	const Tile& aRight = aTiles[aFirstLawn];
+	double aLawnScale = aRight.mDest.mHeight / aRight.mSource.mHeight;
+	double aLawnOffsetX = aRight.mDest.mX - aRight.mSource.mX * aLawnScale, aLawnOffsetY = aRight.mDest.mY - aRight.mSource.mY * aLawnScale;
 
 	for (size_t i = 0; i < aTiles.size(); i++)
 	{
@@ -113,29 +120,43 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 		std::string aWhich = theName + ": tile " + std::to_string(i);
 		double aScaleX = aTile.mDest.mWidth / aTile.mSource.mWidth;
 		double aScaleY = aTile.mDest.mHeight / aTile.mSource.mHeight;
-		Check(std::abs(aScaleX - aScaleY) < 1e-9, aWhich + " is scaled alike both ways");
-		if (aTile.mBackdrop)
+		if (aTile.mKind == Kind::Backdrop)
 		{
-			// in line with the lawn: the same scale, and the lawn's piece of it where the lawn is
-			const Tile& aLawnTile = aTiles[aFirstLawn];
-			double aLawnScale = aLawnTile.mDest.mWidth / aLawnTile.mSource.mWidth;
-			Check(std::abs(aScaleX - aLawnScale) < 1e-9, aWhich + " (the backdrop) has the scale of the lawn");
-			double aOffsetX = aTile.mDest.mX - aTile.mSource.mX * aScaleX, aLawnOffsetX = aLawnTile.mDest.mX - aLawnTile.mSource.mX * aLawnScale;
-			double aOffsetY = aTile.mDest.mY - aTile.mSource.mY * aScaleX, aLawnOffsetY = aLawnTile.mDest.mY - aLawnTile.mSource.mY * aLawnScale;
-			Check(std::abs(aOffsetX - aLawnOffsetX) < EPSILON && std::abs(aOffsetY - aLawnOffsetY) < EPSILON, aWhich + " (the backdrop) lines up with the lawn");
+			// in line with the lawn: the same scale and place, but for its part left of the lawn, which is stretched
+			// across to the safe area
+			Check(std::abs(aScaleY - aLawnScale) < 1e-9, aWhich + " (the backdrop) is as high as the lawn");
+			Check(std::abs(aTile.mDest.mY - (aLawnOffsetY + aTile.mSource.mY * aLawnScale)) < EPSILON, aWhich + " (the backdrop) lines up with the lawn");
+			if (std::abs(aTile.mSource.Right() - theInput.mLawn.mX) < EPSILON)
+			{
+				Check(std::abs(aTile.mSource.Right() - theInput.mLawn.mX) < EPSILON, aWhich + " (the stretched backdrop) ends where the lawn begins");
+				Check(std::abs(aTile.mDest.Right() - (aLawnOffsetX + theInput.mLawn.mX * aLawnScale)) < EPSILON, aWhich + " (the stretched backdrop) meets the lawn");
+				Check(std::abs(aTile.mDest.mX - std::max(0.0, aSafe.mX)) < EPSILON, aWhich + " (the stretched backdrop) reaches the safe area");
+				Check(aScaleX >= aLawnScale - 1e-9 && aScaleX < aLawnScale * 2, aWhich + " (the stretched backdrop) is stretched less than twice");
+			}
+			else
+			{
+				Check(std::abs(aTile.mSource.mX - theInput.mLawn.Right()) < EPSILON, aWhich + " (the backdrop) is right of the lawn");
+				Check(std::abs(aScaleX - aLawnScale) < 1e-9, aWhich + " (the backdrop) has the scale of the lawn");
+				Check(std::abs(aTile.mDest.mX - (aLawnOffsetX + aTile.mSource.mX * aLawnScale)) < EPSILON, aWhich + " (the backdrop) lines up with the lawn across");
+			}
 			continue;
 		}
+		if (aTile.mKind == Kind::Screen)
+			Check(std::abs(aScaleX - aScaleY) < 1e-9, aWhich + " is scaled alike both ways");
 		Check(Inside(aTile.mDest, aScreen), aWhich + " is on the screen");
-		// the lawn may run under the home indicator, but nothing goes under the notch or the Dynamic Island
-		Check(aTile.mDest.mX >= theInput.mSafeArea.mX - EPSILON && aTile.mDest.Right() <= theInput.mSafeArea.Right() + EPSILON,
-			aWhich + " is clear of the notch");
-		// controls stay clear of the top inset too; the cards may go down past the home indicator
+		// nothing goes under the notch or the Dynamic Island
+		Check(aTile.mDest.mX >= aSafe.mX - EPSILON && aTile.mDest.Right() <= aSafe.Right() + EPSILON, aWhich + " is clear of the notch");
 		if (i >= aFirstControl)
-			Check(aTile.mDest.mY >= theInput.mSafeArea.mY - EPSILON, aWhich + " (a control) is below the top of the safe area");
-		for (size_t j = i + 1; j < aTiles.size(); j++)
-			Check(!Overlap(aTile.mDest, aTiles[j].mDest), aWhich + " does not overlap tile " + std::to_string(j));
+		{
+			// the controls stay clear of the top inset too (the cards may go down past the home indicator), do not
+			// overlap one another, and are on top where they are
+			Check(aTile.mDest.mY >= aSafe.mY - EPSILON, aWhich + " (a control) is below the top of the safe area");
+			for (size_t j = i + 1; j < aTiles.size(); j++)
+				Check(!Overlap(aTile.mDest, aTiles[j].mDest), aWhich + " does not overlap tile " + std::to_string(j));
+		}
 
-		// a tap anywhere in the tile lands in the same place of the game's screen, through the topmost tile there
+		// a tap anywhere in it: to the same place of the game's screen (for a card, of its packet), or to nothing for the
+		// sun counter and the progress meter
 		for (double fx : { 0.01, 0.5, 0.99 })
 		{
 			for (double fy : { 0.01, 0.5, 0.99 })
@@ -150,24 +171,21 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 				const Tile& aHit = aTiles[aTop];
 				double aGameX = -1, aGameY = -1;
 				bool aMapped = WindowToGame(aTiles, x, y, aGameX, aGameY);
+				if (aHit.mKind == Kind::SunCounter || aHit.mKind == Kind::Meter)
+				{
+					Check(!aMapped, aWhich + ": a tap on the sun counter or the progress meter goes nowhere");
+					continue;
+				}
 				Check(aMapped, aWhich + " is hit by a tap in it");
 				Check(std::abs(aGameX - (aHit.mSource.mX + (x - aHit.mDest.mX) / aHit.mDest.mWidth * aHit.mSource.mWidth)) < 1e-6 &&
 					std::abs(aGameY - (aHit.mSource.mY + (y - aHit.mDest.mY) / aHit.mDest.mHeight * aHit.mSource.mHeight)) < 1e-6,
 					aWhich + " maps a tap back");
+				Check(aHit.mSource.Contains(aGameX, aGameY) || fx > 0.9 || fy > 0.9, aWhich + " maps a tap into what it shows");
 			}
 		}
 	}
 
-	// the lawn: one scale, its pieces side by side, every cell shown and not under a control
-	const Tile& aRight = aTiles[aFirstLawn];
-	double aLawnScale = aRight.mDest.mHeight / aRight.mSource.mHeight;
-	if (aNumLawnTiles == 2)
-	{
-		const Tile& aLeft = aTiles[aFirstLawn + 1];
-		Check(std::abs(aLeft.mDest.mWidth / aLeft.mSource.mWidth - aLawnScale) < 1e-9, theName + ": the lawn pieces have one scale");
-		Check(std::abs(aLeft.mDest.Right() - aRight.mDest.mX) < EPSILON, theName + ": the lawn pieces meet");
-		Check(std::abs(aLeft.mDest.Bottom() - aRight.mDest.Bottom()) < EPSILON, theName + ": the lawn pieces end alike");
-	}
+	// every cell of the lawn shown and not under a control
 	for (int aGridX = 0; aGridX < 9; aGridX++)
 	{
 		for (int aGridY = 0; aGridY < 6; aGridY++)
@@ -197,71 +215,107 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 		}
 	}
 
-	// every control is shown, in tiles of its own: the packets as cards, picture and cost side by side; the sun counter
-	// as its sun and number side by side; the shovel whole
-	auto aFind = [&](const Box& theBox) -> const Tile*
+	// the controls
+	auto aFindKind = [&](Kind theKind) -> const Tile*
 	{
 		for (size_t i = aFirstControl; i < aTiles.size(); i++)
-			if (Same(aTiles[i].mSource, theBox))
+			if (aTiles[i].mKind == theKind)
 				return &aTiles[i];
 		return nullptr;
 	};
-	auto aSideBySide = [&](const Box& theLeft, const Box& theRight, const std::string& theWhat, bool theBottoms)
+
+	// the cards: one for each packet, in order, in one column at the left edge of the safe area from its top, each
+	// below the one before, all alike, as wide for their height as the phone versions have them
+	std::vector<const Tile*> aCards;
+	for (const Tile& t : aTiles)
+		if (t.mKind == Kind::Card)
+			aCards.push_back(&t);
+	Check(aCards.size() == theInput.mPackets.size(), theName + ": a card for each packet");
+	double aCardHeight = 0, aCardWidth = 0, aColumnRight = aSafe.mX;
+	for (size_t i = 0; i < aCards.size(); i++)
 	{
-		const Tile* aLeftTile = aFind(theLeft);
-		const Tile* aRightTile = aFind(theRight);
-		Check(aLeftTile && aRightTile, theName + ": " + theWhat + " has its tiles");
-		if (!aLeftTile || !aRightTile)
-			return;
-		Check(std::abs(aLeftTile->mDest.Right() - aRightTile->mDest.mX) < EPSILON, theName + ": " + theWhat + " is side by side");
-		if (theBottoms)
-			Check(std::abs(aLeftTile->mDest.Bottom() - aRightTile->mDest.Bottom()) < EPSILON, theName + ": " + theWhat + " ends alike");
-		Check(std::abs(aLeftTile->mDest.mWidth / aLeftTile->mSource.mWidth - aRightTile->mDest.mWidth / aRightTile->mSource.mWidth) < 1e-9,
-			theName + ": " + theWhat + " has one scale");
-	};
-	if (!theInput.mMenuButton.Empty())
-	{
-		// in a tile of its own, or in the first piece of the game's screen, where nothing covers it
-		const Box& m = theInput.mMenuButton;
-		const Box& r = aTiles[aFirstLawn].mSource;
-		bool aInPiece = m.mX >= r.mX && m.Right() <= r.Right() && m.mY >= r.mY && m.Bottom() <= r.Bottom();
-		if (aInPiece)
+		const Tile& t = *aCards[i];
+		std::string aWhich = theName + ": card " + std::to_string(i);
+		Check(t.mIndex == static_cast<int>(i) && Same(t.mSource, theInput.mPackets[i]), aWhich + " is of its packet");
+		Check(std::abs(t.mDest.mX - (aSafe.mX + EDGE_MARGIN)) < EPSILON, aWhich + " is at the left edge of the safe area");
+		Check(std::abs(t.mDest.mWidth / t.mDest.mHeight - CARD_WIDTH / CARD_HEIGHT) < 1e-9, aWhich + " is a wide card");
+		if (i == 0)
 		{
-			double aCentreX = aTiles[aFirstLawn].mDest.mX + (m.mX + m.mWidth / 2 - r.mX) * aLawnScale;
-			double aCentreY = aTiles[aFirstLawn].mDest.mY + (m.mY + m.mHeight / 2 - r.mY) * aLawnScale;
-			Check(TopmostAt(aTiles, aCentreX, aCentreY) == static_cast<int>(aFirstLawn), theName + ": the menu button is shown and tappable");
+			Check(std::abs(t.mDest.mY - (aSafe.mY + EDGE_MARGIN)) < EPSILON, aWhich + " is at the top");
+			aCardHeight = t.mDest.mHeight;
+			aCardWidth = t.mDest.mWidth;
+			aColumnRight = t.mDest.Right();
 		}
 		else
-			Check(aFind(m) != nullptr, theName + ": the menu button has a tile");
-	}
-	{
-		const Box& c = theInput.mSunCounter;
-		aSideBySide(Box{ c.mX, c.mY, c.mWidth, SUN_PICTURE_HEIGHT }, Box{ c.mX, c.mY + SUN_PICTURE_HEIGHT, c.mWidth, c.mHeight - SUN_PICTURE_HEIGHT },
-			"the sun counter", false);
-	}
-	if (!theInput.mShovel.Empty())
-		Check(aFind(theInput.mShovel) != nullptr, theName + ": the shovel has a tile");
-	double aSmallestPacket = 1e9;
-	double aLastCardBottom = -1;
-	for (size_t i = 0; i < theInput.mPackets.size(); i++)
-	{
-		const Box& p = theInput.mPackets[i];
-		Box aPicture{ p.mX, p.mY, p.mWidth, PACKET_PICTURE_HEIGHT };
-		Box aCost{ p.mX + PACKET_COST_X, p.mY + PACKET_PICTURE_HEIGHT, PACKET_COST_WIDTH, p.mHeight - PACKET_PICTURE_HEIGHT };
-		aSideBySide(aPicture, aCost, "packet " + std::to_string(i), true);
-		if (const Tile* t = aFind(aPicture))
 		{
-			aSmallestPacket = std::min(aSmallestPacket, t->mDest.mWidth);
-			Check(t->mDest.mY > aLastCardBottom, theName + ": packet " + std::to_string(i) + " is below the one before");
-			aLastCardBottom = t->mDest.Bottom();
+			Check(std::abs(t.mDest.mHeight - aCardHeight) < EPSILON, aWhich + " is as large as the others");
+			Check(std::abs(t.mDest.mY - (aCards[i - 1]->mDest.Bottom() + CARD_GAP)) < EPSILON, aWhich + " is below the one before");
 		}
 	}
+	if (!aCards.empty())
+	{
+		double aLetterboxScale = std::min(theInput.mScreenWidth / 800, theInput.mScreenHeight / 600);
+		Check(aCardWidth > 50 * aLetterboxScale * 1.2, theName + ": cards are wider than packets letterboxed");
+		Check(aCardHeight >= 30, theName + ": cards are at least 30 points high");
+		Check(aCardHeight <= MAX_CARD_HEIGHT * theInput.mScreenHeight + EPSILON, theName + ": cards are not larger than the phone versions have them");
+		Check(aCards.back()->mDest.Bottom() <= theInput.mScreenHeight + EPSILON, theName + ": the cards fit down the window");
+	}
 
-	// how much of the window shows the game
+	// along the top: the sun counter right of the cards, then the shovel, as high as it; the menu button in the top
+	// right corner; the progress meter between the shovel and the button
+	const Tile* aSun = aFindKind(Kind::SunCounter);
+	Check(aSun != nullptr, theName + ": the sun counter is shown");
+	double aBarRight = aColumnRight;
+	if (aSun)
+	{
+		Check(aSun->mDest.mX > aColumnRight && aSun->mDest.mX < aColumnRight + 2 * GAP, theName + ": the sun counter is right beside the cards");
+		Check(std::abs(aSun->mDest.mY - (aSafe.mY + EDGE_MARGIN)) < EPSILON, theName + ": the sun counter is at the top");
+		Check(aSun->mDest.mWidth > aSun->mDest.mHeight * 2, theName + ": the sun counter is a wide bar");
+		aBarRight = aSun->mDest.Right();
+	}
+	if (!theInput.mShovel.Empty())
+	{
+		const Tile* aShovel = aFindKind(Kind::Shovel);
+		Check(aShovel != nullptr, theName + ": the shovel has a tile");
+		if (aShovel && aSun)
+		{
+			Check(aShovel->mDest.mX > aSun->mDest.Right() && aShovel->mDest.mX < aSun->mDest.Right() + 2 * GAP, theName + ": the shovel is beside the sun counter");
+			Check(Same(aShovel->mSource, theInput.mShovel), theName + ": the shovel's tile is of the shovel");
+			Check(std::abs(aShovel->mDest.mY - aSun->mDest.mY) < EPSILON && std::abs(aShovel->mDest.mHeight - aSun->mDest.mHeight) < EPSILON,
+				theName + ": the shovel is as high as the sun counter");
+			aBarRight = aShovel->mDest.Right();
+		}
+	}
+	const Tile* aMenu = theInput.mMenuButton.Empty() ? nullptr : aFindKind(Kind::Menu);
+	if (!theInput.mMenuButton.Empty())
+	{
+		Check(aMenu != nullptr, theName + ": the menu button has a tile");
+		if (aMenu)
+		{
+			Check(aMenu->mDest.Right() > aSafe.Right() - 6 && std::abs(aMenu->mDest.mY - aSafe.mY) < EPSILON, theName + ": the menu button is in the top right corner");
+			Check(aMenu->mDest.mHeight >= 36, theName + ": the menu button is at least 36 points high");
+			Check(aMenu->mDest.mX > aBarRight, theName + ": the menu button is right of the shovel");
+			Check(Same(aMenu->mSource, theInput.mMenuButton), theName + ": the menu button's tile is of the button");
+			Check(std::abs(aMenu->mDest.mWidth / aMenu->mDest.mHeight - theInput.mMenuButton.mWidth / theInput.mMenuButton.mHeight) < 1e-9,
+				theName + ": the menu button keeps its aspect");
+		}
+	}
+	const Tile* aMeter = aFindKind(Kind::Meter);
+	Check((aMeter != nullptr) == !theInput.mMeter.Empty(), theName + ": the progress meter is shown when the game shows it");
+	if (aMeter)
+	{
+		Check(aMeter->mDest.mX > aBarRight, theName + ": the progress meter is right of the shovel");
+		if (aMenu)
+			Check(aMeter->mDest.Right() < aMenu->mDest.mX && aMeter->mDest.Right() > aMenu->mDest.mX - 2 * GAP, theName + ": the progress meter is beside the menu button");
+		Check(std::abs(aMeter->mDest.mWidth / aMeter->mDest.mHeight - theInput.mMeter.mWidth / theInput.mMeter.mHeight) < 1e-9,
+			theName + ": the progress meter keeps its aspect");
+	}
+
+	// no black: right of the safe area's left edge, every point of the window shows something (with a backdrop)
 	int aCovered = 0, aSamples = 0;
 	for (double y = 0.5; y < theInput.mScreenHeight; y += 2)
 	{
-		for (double x = 0.5; x < theInput.mScreenWidth; x += 2)
+		for (double x = std::max(0.0, aSafe.mX) + 0.5; x < theInput.mScreenWidth; x += 2)
 		{
 			aSamples++;
 			for (const Tile& aTile : aTiles)
@@ -276,19 +330,15 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 	}
 	double aCoverage = static_cast<double>(aCovered) / aSamples;
 	if (!theInput.mBackdrop.Empty())
-		Check(aCoverage > 0.8, theName + ": the game covers most of the window");
+		Check(aCovered == aSamples, theName + ": nothing is black right of the safe area's left edge");
 
-	// larger than the 800x600 screen letterboxed into the window, and packets big enough to tap
+	// larger than the 800x600 screen letterboxed into the window
 	double aLetterboxScale = std::min(theInput.mScreenWidth / 800, theInput.mScreenHeight / 600);
 	Check(aLawnScale > aLetterboxScale * 0.999, theName + ": the lawn is as large as letterboxed at the least");
-	if (!theInput.mPackets.empty())
-	{
-		double aLetterboxPacket = 54 * aLetterboxScale;
-		Check(aSmallestPacket > aLetterboxPacket, theName + ": packets are larger than letterboxed");
-		Check(aSmallestPacket >= 36, theName + ": packets are at least 36 points wide");
-	}
-	std::printf("  lawn %.0f%% of letterboxed, packets %.0f pt wide (letterboxed %.0f pt), %.0f%% of the window covered, %zu tiles\n",
-		aLawnScale / aLetterboxScale * 100, aSmallestPacket, 54 * aLetterboxScale, aCoverage * 100, aTiles.size());
+	Check(std::abs(aRight.mDest.mHeight - theInput.mScreenHeight) < EPSILON || aRight.mDest.mHeight < theInput.mScreenHeight,
+		theName + ": the lawn is not taller than the window");
+	std::printf("  lawn %.0f%% of letterboxed, cards %.0fx%.0f pt, %.0f%% of the window right of the safe edge covered, %zu tiles\n",
+		aLawnScale / aLetterboxScale * 100, aCardWidth, aCardHeight, aCoverage * 100, aTiles.size());
 }
 
 }
@@ -306,6 +356,12 @@ int main()
 	// the other way round, with the inset only on the side of the island
 	CheckLayout("iPhone 15, island on the left only", GameInput(852, 393, Box{ 59, 0, 852 - 59, 372 }, 10, true));
 	CheckLayout("iPhone 15, island on the right only", GameInput(852, 393, Box{ 0, 0, 852 - 59, 372 }, 10, true));
+	// before the first wave, without the progress meter
+	{
+		Input anInput = GameInput(852, 393, aPhoneSafe, 6, true);
+		anInput.mMeter = Box{};
+		CheckLayout("iPhone 15, no progress meter", anInput);
+	}
 	// a level without a backdrop image
 	{
 		Input anInput = GameInput(852, 393, aPhoneSafe, 6, true);
