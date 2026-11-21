@@ -2833,6 +2833,14 @@ void Challenge::DrawRain(Graphics* g)
 
 void Challenge::DrawStormNight(Graphics* g)
 {
+	DrawStormDarkness(g);
+	mBoard->DrawUIBottom(g);
+	mBoard->DrawTopRightUI(g);
+}
+
+// the darkness of the storm, and its flashes of lightning, over all of the screen
+void Challenge::DrawStormDarkness(Graphics* g)
+{
 	if (mChallengeState == STATECHALLENGE_STORM_FLASH_1 && mChallengeStateCounter < 300)
 	{
 		if (mChallengeStateCounter > STORM_FLASH_TIME)
@@ -2857,9 +2865,6 @@ void Challenge::DrawStormNight(Graphics* g)
 		g->SetColor(Color::Black);
 		g->FillRect(-1000, -1000, BOARD_WIDTH + 2000, BOARD_HEIGHT + 2000);
 	}
-
-	mBoard->DrawUIBottom(g);
-	mBoard->DrawTopRightUI(g);
 }
 
 void Challenge::PlayBossEnter()

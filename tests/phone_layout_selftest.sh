@@ -1,8 +1,9 @@
 #!/bin/bash
 # The phone layout tested in the running game, on a Mac or on Linux (headless there with xvfb-run): the window takes the size of a phone in landscape, and the game
 # plays some levels by itself (src/Lawn/System/PhoneLayoutSelfTest.h). Prints a report, also kept in
-# build-phone/selftest-report.txt, and exits 1 when a check failed. A picture of the window in each level goes to
-# build-phone/screenshots/<phone>-<level>.png, to look at.
+# build-phone/selftest-report.txt, and exits 1 when a check failed. Pictures of the window go to build-phone/screenshots/,
+# to look at: <phone>-<level>.png and <phone>-<level>-later.png in each level, and framed outside the level layout
+# <phone>-main-menu.png, <phone>-<level>-seed-chooser.png and <phone>-<level>-menu.png.
 #
 #   tests/phone_layout_selftest.sh build    build build-phone/pvz-portable with the self-test in it
 #   tests/phone_layout_selftest.sh run [phone...] [level...]
@@ -12,7 +13,8 @@
 #                                           to play it yourself, without sound; saves in build-phone/show-save/
 #
 # Phones: iphone15, iphonese, iphone15promax (all by default). Levels: adventure-1-1, adventure-1-3, survival-day,
-# survival-day-10-packets, survival-night, survival-pool, survival-fog, survival-roof (all by default).
+# survival-day-10-packets, survival-night, survival-pool, survival-fog, survival-roof, adventure-1-10, adventure-2-10,
+# adventure-4-10 (conveyor belts, the last in a stormy night; all by default).
 #
 # The game needs main.pak and properties/ in build-phone/ (git ignores the folder). Its saves go to
 # build-phone/selftest-save/, made anew for each run.

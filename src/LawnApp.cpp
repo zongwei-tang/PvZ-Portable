@@ -1365,19 +1365,24 @@ void LawnApp::EnsureTrainerPanel()
 	mTrainerPanel->UpdateClosedState();
 }
 
-// A level in the phone layout: on phones, with the option on, while a normal level is played. Levels with their own
-// strip along the top (conveyor belt, slot machine, Zen Garden, ...), the seed chooser, cutscenes and dialogs keep the
-// 800x600 screen. PVZP_PHONE_LAYOUT=1 turns it on for a wide window elsewhere too, to try it.
-bool LawnApp::PhoneLayoutApplies()
+// A level in the phone layout: on phones, with the option on, while a normal level or one with a conveyor belt is
+// played. Levels with their own strip along the top (slot machine, Zen Garden, ...), the seed chooser, cutscenes, dialogs
+// and the menus show the 800x600 screen framed (PhoneLayout::ComputeFramed). PVZP_PHONE_LAYOUT=1 turns both on for a
+// wide window elsewhere too, to try them.
+bool LawnApp::PhoneScreen()
 {
 #if defined(__IPHONEOS__) || (defined(__ANDROID__) && !defined(__TERMUX__))
-	if (!mPhoneLayout)
-		return (mPhoneLayoutOff = "option off", false);
+	return mPhoneLayout;
 #else
 	static const bool anEnabled = []() { const char* aValue = std::getenv("PVZP_PHONE_LAYOUT"); return aValue != nullptr && aValue[0] == '1'; }();
-	if (!anEnabled)
-		return (mPhoneLayoutOff = "not a phone", false);
+	return anEnabled;
 #endif
+}
+
+bool LawnApp::PhoneLayoutApplies()
+{
+	if (!PhoneScreen())
+		return (mPhoneLayoutOff = "not a phone or option off", false);
 	if (mBoard == nullptr || !mBoard->mSeedBank || !mLoadingThreadCompleted)
 		return (mPhoneLayoutOff = "no board", false);
 	if (mGameScene != GameScenes::SCENE_PLAYING)
@@ -1386,7 +1391,7 @@ bool LawnApp::PhoneLayoutApplies()
 		return (mPhoneLayoutOff = "dialog", false);
 	if (mTrainerPanel && mTrainerPanel->mOpen)
 		return (mPhoneLayoutOff = "trainer", false);
-	if (mBoard->HasConveyorBeltSeedBank() || IsSlotMachineLevel() || IsChallengeWithoutSeedBank() || IsScaryPotterLevel() || IsWhackAZombieLevel())
+	if (IsSlotMachineLevel() || IsChallengeWithoutSeedBank() || IsScaryPotterLevel() || IsWhackAZombieLevel())
 		return (mPhoneLayoutOff = "level of its own", false);
 	if (mGameMode == GameMode::GAMEMODE_CHALLENGE_ZEN_GARDEN || mGameMode == GameMode::GAMEMODE_TREE_OF_WISDOM ||
 		mGameMode == GameMode::GAMEMODE_CHALLENGE_LAST_STAND || mGameMode == GameMode::GAMEMODE_CHALLENGE_BEGHOULED ||
@@ -1423,7 +1428,8 @@ bool LawnApp::PhoneLayoutMovesMenu()
 
 bool LawnApp::PhoneLayoutMovesBank()
 {
-	return PhoneLayoutDraws(this, PhoneLayout::Kind::SunCounter) || PhoneLayoutDraws(this, PhoneLayout::Kind::Card);
+	return PhoneLayoutDraws(this, PhoneLayout::Kind::SunCounter) || PhoneLayoutDraws(this, PhoneLayout::Kind::Card) ||
+		PhoneLayoutDraws(this, PhoneLayout::Kind::Conveyor);
 }
 
 bool LawnApp::PhoneLayoutMovesShovel()
@@ -1436,27 +1442,36 @@ void LawnApp::UpdatePhoneLayout()
 	if (!mGLInterface || !mWindow)
 		return;
 	std::vector<PresentationTile> aTiles;
+	mPhonePresentation = PhonePresentation::None;
+	bool aSuppressed = false;
 #ifdef PVZP_PHONE_LAYOUT_SELFTEST
-	if (PhoneLayoutApplies() && !PhoneLayoutSelfTest::SuppressTiles())
-#else
-	if (PhoneLayoutApplies())
+	aSuppressed = PhoneLayoutSelfTest::SuppressTiles();	// a frame letterboxed, to compare with
 #endif
+	int aWindowWidth = 0, aWindowHeight = 0;
+	SDL_GetWindowSize(mWindow.get(), &aWindowWidth, &aWindowHeight);
+	SDL_Rect aSafe{ 0, 0, aWindowWidth, aWindowHeight };
+	if (!SDL_GetWindowSafeArea(mWindow.get(), &aSafe) || aSafe.w <= 0 || aSafe.h <= 0)
+		aSafe = SDL_Rect{ 0, 0, aWindowWidth, aWindowHeight };
+#ifdef PVZP_PHONE_LAYOUT_SELFTEST
+	PhoneLayoutSelfTest::SafeArea(aSafe);	// the notch of the phone it plays
+#endif
+	PhoneLayout::Box aSafeBox{ static_cast<double>(aSafe.x), static_cast<double>(aSafe.y), static_cast<double>(aSafe.w), static_cast<double>(aSafe.h) };
+	PhoneLayout::Box aScreenBox{ 0, 0, static_cast<double>(BOARD_WIDTH), static_cast<double>(BOARD_HEIGHT) };
+	auto ToPresentation = [](const PhoneLayout::Tile& theTile)
 	{
-		int aWindowWidth = 0, aWindowHeight = 0;
-		SDL_GetWindowSize(mWindow.get(), &aWindowWidth, &aWindowHeight);
-		SDL_Rect aSafe{ 0, 0, aWindowWidth, aWindowHeight };
-		if (!SDL_GetWindowSafeArea(mWindow.get(), &aSafe) || aSafe.w <= 0 || aSafe.h <= 0)
-			aSafe = SDL_Rect{ 0, 0, aWindowWidth, aWindowHeight };
-#ifdef PVZP_PHONE_LAYOUT_SELFTEST
-		PhoneLayoutSelfTest::SafeArea(aSafe);	// the notch of the phone it plays
-#endif
-
+		PresentationTile aPiece{ FRect(theTile.mSource.mX, theTile.mSource.mY, theTile.mSource.mWidth, theTile.mSource.mHeight),
+			FRect(theTile.mDest.mX, theTile.mDest.mY, theTile.mDest.mWidth, theTile.mDest.mHeight) };
+		aPiece.mBlur = theTile.mKind == PhoneLayout::Kind::Blur;
+		return aPiece;
+	};
+	if (!aSuppressed && PhoneLayoutApplies())
+	{
 		const SeedBank& aBank = *mBoard->mSeedBank;
 		PhoneLayout::Input anInput;
 		anInput.mScreenWidth = aWindowWidth;
 		anInput.mScreenHeight = aWindowHeight;
-		anInput.mSafeArea = PhoneLayout::Box{ static_cast<double>(aSafe.x), static_cast<double>(aSafe.y), static_cast<double>(aSafe.w), static_cast<double>(aSafe.h) };
-		anInput.mLawn = PhoneLayout::Box{ 0, 0, static_cast<double>(BOARD_WIDTH), static_cast<double>(BOARD_HEIGHT) };
+		anInput.mSafeArea = aSafeBox;
+		anInput.mLawn = aScreenBox;
 
 		// the backdrop of the level, which the board draws BOARD_OFFSET left of the screen: the house left of the lawn and
 		// the street right of it
@@ -1477,13 +1492,21 @@ void LawnApp::UpdatePhoneLayout()
 		if (aBackdrop != nullptr && aBackdrop->mWidth > 0 && aBackdrop->mHeight > 0)
 			anInput.mBackdrop = PhoneLayout::Box{ -static_cast<double>(BOARD_OFFSET), 0, static_cast<double>(aBackdrop->mWidth), static_cast<double>(aBackdrop->mHeight) };
 
-		for (int i = 0; i < aBank.mNumPackets && i < SEEDBANK_MAX; i++)
+		// on a conveyor belt the packets on it, each where it is along the belt (they ride to the left, 50 apart, from x 91)
+		bool aConveyor = mBoard->HasConveyorBeltSeedBank();
+		if (aConveyor)
+			anInput.mConveyorBelt = PhoneLayout::Box{ aBank.mX + 83.0, static_cast<double>(aBank.mY), 516, 86 };
+		int aNumPackets = aConveyor ? mBoard->mSeedBank->GetNumSeedsOnConveyorBelt() : aBank.mNumPackets;
+		for (int i = 0; i < aNumPackets && i < SEEDBANK_MAX; i++)
 		{
 			const SeedPacket& aPacket = aBank.mSeedPackets[i];
 			anInput.mPackets.push_back(PhoneLayout::Box{ static_cast<double>(aBank.mX + aPacket.mX + aPacket.mOffsetX), static_cast<double>(aBank.mY + aPacket.mY),
 				static_cast<double>(aPacket.mWidth), static_cast<double>(aPacket.mHeight) });
+			if (aConveyor)
+				anInput.mPacketSlots.push_back((aPacket.mX + aPacket.mOffsetX - 91) / 50.0);
 		}
-		anInput.mSunCounter = PhoneLayout::Box{ static_cast<double>(aBank.mX), static_cast<double>(aBank.mY), 80, static_cast<double>(aBank.mHeight) };
+		if (!aConveyor)	// a conveyor belt level has no sun
+			anInput.mSunCounter = PhoneLayout::Box{ static_cast<double>(aBank.mX), static_cast<double>(aBank.mY), 80, static_cast<double>(aBank.mHeight) };
 		if (mBoard->mShowShovel)
 		{
 			Rect aShovel = mBoard->GetShovelButtonRect();
@@ -1496,13 +1519,12 @@ void LawnApp::UpdatePhoneLayout()
 			double aTop = std::max(0, aMenu.mY);
 			anInput.mMenuButton = PhoneLayout::Box{ static_cast<double>(aMenu.mX), aTop, static_cast<double>(aMenu.mWidth), aMenu.mY + aMenu.mHeight - aTop };
 		}
+		anInput.mDarkWeather = IsStormyNightLevel();
 		if (mBoard->HasProgressMeter())
 			anInput.mMeter = PhoneLayout::Box{ PhoneLayoutDraw::METER_X, PhoneLayoutDraw::METER_Y, PhoneLayoutDraw::METER_WIDTH, PhoneLayoutDraw::METER_HEIGHT };
 
 		for (const PhoneLayout::Tile& aTile : PhoneLayout::Compute(anInput))
 		{
-			FRect aSource(aTile.mSource.mX, aTile.mSource.mY, aTile.mSource.mWidth, aTile.mSource.mHeight);
-			FRect aDest(aTile.mDest.mX, aTile.mDest.mY, aTile.mDest.mWidth, aTile.mDest.mHeight);
 			if (aTile.mKind == PhoneLayout::Kind::Backdrop)
 			{
 				// in the pixels of the image, whole ones, the window rectangle grown to match
@@ -1516,19 +1538,30 @@ void LawnApp::UpdatePhoneLayout()
 				aTiles.push_back(aPiece);
 				continue;
 			}
-			PresentationTile aPiece{ aSource, aDest };
+			PresentationTile aPiece = ToPresentation(aTile);
 			if (aTile.Overlay())
 			{
 				// drawn by PhoneLayoutDraw into the window; a tap on a card goes to its packet, on the shovel or the menu
-				// button to it, and the sun counter and progress meter take taps and do nothing with them
+				// button to it, and the others take taps and do nothing with them (the weather is over the backdrop,
+				// which takes none either)
 				aPiece.mOverlay = static_cast<int>(aTile.mKind);
 				aPiece.mOverlayIndex = aTile.mIndex;
-				aPiece.mNoTap = aTile.TakesNoTap();
+				aPiece.mNoTap = aTile.TakesNoTap() || !aTile.TakesTaps();
 			}
 			aTiles.push_back(aPiece);
 		}
 		if (!mGLInterface->mDrawOverlay)
 			mGLInterface->mDrawOverlay = [this](const PresentationTile& theTile) { PhoneLayoutDraw::Overlay(this, theTile); };
+		if (!aTiles.empty())
+			mPhonePresentation = PhonePresentation::Level;
+	}
+	if (aTiles.empty() && !aSuppressed && PhoneScreen())
+	{
+		// anywhere else (menus, the seed chooser, dialogs, a level the layout is not for): framed, without black
+		for (const PhoneLayout::Tile& aTile : PhoneLayout::ComputeFramed(aWindowWidth, aWindowHeight, aSafeBox, aScreenBox))
+			aTiles.push_back(ToPresentation(aTile));
+		if (!aTiles.empty())
+			mPhonePresentation = PhonePresentation::Framed;
 	}
 	mGLInterface->SetPresentationTiles(std::move(aTiles));	// none: letterboxed
 }

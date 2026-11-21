@@ -167,6 +167,10 @@ public:
 	// The phone layout of a level on a wide phone screen (Lawn/System/PhoneLayout.h), an option on phones
 	bool							mPhoneLayout = true;
 	bool							PhoneLayoutApplies();
+	bool							PhoneScreen();					// a phone with the option on (or PVZP_PHONE_LAYOUT=1)
+	// how the frame is shown: letterboxed as everywhere, in the phone layout of a level, or framed (PhoneLayout.h)
+	enum class PhonePresentation { None, Level, Framed };
+	PhonePresentation				mPhonePresentation = PhonePresentation::None;
 	const char*						mPhoneLayoutOff = "";	// why PhoneLayoutApplies() last said no
 	void							UpdatePhoneLayout();
 	bool							mDrawingPhoneOverlay = false;	// the phone layout draws its overlay (Lawn/System/PhoneLayoutDraw.h)

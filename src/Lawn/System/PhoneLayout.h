@@ -48,6 +48,9 @@ enum class Kind
 	Meter,		// the progress meter (mSource: where the game draws it in its screen); it takes taps, and does nothing with them
 	Menu,		// the menu button (mSource: where it is in the game's screen); a tap on it goes to the button
 	Shovel,		// the shovel in its bank (mSource: where it is in the game's screen); a tap on it goes to the shovel
+	Conveyor,	// the conveyor belt the cards ride up, in conveyor belt levels; it takes taps, and does nothing with them
+	Weather,	// over a piece of the backdrop, the darkness the game draws over its screen (the stormy night); no tap goes to it
+	Blur,		// the game's screen (mSource: a piece of it) blurred and dimmed, as the background of a framed screen; no tap goes to it
 };
 
 // Where something goes in the window (mDest, in window points), and what of the game it shows or stands for (mSource,
@@ -60,7 +63,8 @@ struct Tile
 	int		mIndex = -1;	// of the packet, for a card
 
 	bool	Overlay() const { return mKind != Kind::Screen && mKind != Kind::Backdrop; }
-	bool	TakesNoTap() const { return mKind == Kind::SunCounter || mKind == Kind::Meter; }
+	bool	TakesTaps() const { return mKind != Kind::Backdrop && mKind != Kind::Weather && mKind != Kind::Blur; }
+	bool	TakesNoTap() const { return mKind == Kind::SunCounter || mKind == Kind::Meter || mKind == Kind::Conveyor; }
 };
 
 struct Input
@@ -77,6 +81,12 @@ struct Input
 	Box					mShovel;			// empty without a shovel
 	Box					mMeter;				// the progress meter with its flags; empty when it is not shown
 	std::vector<Box>	mPackets;			// where the packets are (what a tap on a card goes to)
+	// a conveyor belt level: where the game has the belt (empty in other levels), and for each packet where it is along
+	// the belt, in slots from the belt's start (where the packets ride to) to its end at CONVEYOR_SLOTS; the cards ride up
+	// a belt down the left edge instead of standing in a column
+	Box					mConveyorBelt;
+	std::vector<double>	mPacketSlots;
+	bool				mDarkWeather = false;	// the game darkens all of its screen (the stormy night): the backdrop too
 };
 
 constexpr double	MIN_ASPECT = 1.65;			// narrower screens (iPad, 4:3 and 16:10) keep the 800x600 screen
@@ -92,12 +102,19 @@ constexpr double	MAX_CARD_HEIGHT = 0.11;
 constexpr double	SUN_COUNTER_WIDTH = 118;
 constexpr double	SUN_COUNTER_HEIGHT = 42;
 constexpr double	MIN_MENU_HEIGHT = 36;		// points high, the menu button, at the least
+constexpr double	CONVEYOR_SLOTS = 10;		// the length of the conveyor belt, in packets
+constexpr double	CONVEYOR_PAD = 5;			// card units between the cards and the sides of the belt
 
 // The tiles, drawn in this order: the backdrop (when there is one: its part left of the game's screen stretched across
-// to the safe area, then its part right of it), the game's screen, the shovel, the menu button, the progress meter, the
-// sun counter, the cards. Empty when the screen is not wide enough for the layout to gain anything; the game then shows
+// to the safe area, then its part right of it), the game's screen, the weather over the backdrop, the shovel, the menu button, the progress meter, the
+// sun counter, the conveyor belt, the cards. Empty when the screen is not wide enough for the layout to gain anything; the game then shows
 // its 800x600 screen as usual.
 std::vector<Tile>	Compute(const Input& theInput);
+
+// Outside the levels (menus, the seed chooser, dialogs, ...), on a screen as wide as Compute needs: the game's screen as
+// tall as the window, in the middle of the safe area, over a blurred copy of it that covers the window, so that no black
+// shows. The tiles: the blurred copy, then the game's screen. Empty on narrower screens.
+std::vector<Tile>	ComputeFramed(double theScreenWidth, double theScreenHeight, const Box& theSafeArea, const Box& theScreen);
 
 // The point of the game's screen under a window point, through the topmost tile there that is not the backdrop; false
 // when there is none, or when it is one that takes taps and does nothing with them.

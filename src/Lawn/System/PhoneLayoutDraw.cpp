@@ -9,6 +9,7 @@
 #include "LawnApp.h"
 #include "Resources.h"
 #include "Lawn/Board.h"
+#include "Lawn/Challenge.h"
 #include "Lawn/SeedPacket.h"
 #include "Lawn/Widget/GameButton.h"
 #include "PvzpLib/PvzpCommon.h"
@@ -18,6 +19,7 @@
 #include "misc/SexyMatrix.h"
 #include "widget/WidgetManager.h"
 #include <algorithm>
+#include <cmath>
 #include <string>
 
 using namespace Sexy;
@@ -161,6 +163,25 @@ void DrawSunCounter(Graphics* g, Board* theBoard)
 	ScaledString(g, aFont, aMoney, (aInsideLeft + aInsideRight - aWidth) / 2, (aInsideTop + aInsideBottom + aDigitHeight * aScale) / 2 - 2.5f, aScale, aColor);
 }
 
+// The conveyor belt, in units along it (theLength) and across it (theWidth) from 0,0, running along x: the panel of the
+// game's conveyor belt, and its belt moving inside, stretched across
+void DrawConveyor(Graphics* g, Board* theBoard, int theLength, int theWidth)
+{
+	Image* aPanel = IMAGE_CONVEYORBELT_BACKDROP;	// 516x86, a metal frame
+	const int aColumns[4] = { 0, 8, 508, 516 };
+	const int aRows[4] = { 0, 8, 78, 86 };
+	Stretched(g, aPanel, 0, 0, theLength, theWidth, aColumns, aRows);
+	Image* aBelt = IMAGE_CONVEYORBELT;	// 502x16 in 6 cels, one under another
+	int aCelHeight = aBelt->GetCelHeight();
+	int aCel = theBoard->mSeedBank->mConveyorBeltCounter / 4 % 6;
+	const int aInset = 7, aBeltLength = aBelt->GetWidth() - 2;
+	for (int x = aInset; x < theLength - aInset; x += aBeltLength)
+	{
+		int aLength = std::min(aBeltLength, theLength - aInset - x);
+		Piece(g, aBelt, x, aInset, aLength, theWidth - 2 * aInset, 1, aCel * aCelHeight, aLength, aCelHeight);
+	}
+}
+
 }
 
 void Overlay(LawnApp* theApp, const PresentationTile& theTile)
@@ -180,6 +201,20 @@ void Overlay(LawnApp* theApp, const PresentationTile& theTile)
 	case PhoneLayout::Kind::SunCounter:
 		aTransform.Scale(static_cast<float>(theTile.mDest.mWidth / PhoneLayout::SUN_COUNTER_WIDTH), static_cast<float>(theTile.mDest.mHeight / PhoneLayout::SUN_COUNTER_HEIGHT));
 		break;
+	case PhoneLayout::Kind::Conveyor:
+	{
+		// along x and across y in card units, turned to run down the tile: x to y, y to the left from its right edge
+		double aScale = theTile.mDest.mWidth / (PhoneLayout::CARD_WIDTH + 2 * PhoneLayout::CONVEYOR_PAD);
+		SexyMatrix3 aTurn;
+		aTurn.m00 = 0; aTurn.m01 = -1; aTurn.m02 = static_cast<float>(theTile.mDest.mWidth / aScale);
+		aTurn.m10 = 1; aTurn.m11 = 0; aTurn.m12 = 0;
+		aTurn.m20 = 0; aTurn.m21 = 0; aTurn.m22 = 1;
+		aTransform = aTurn;
+		aTransform.Scale(static_cast<float>(aScale), static_cast<float>(aScale));
+		break;
+	}
+	case PhoneLayout::Kind::Weather:
+		break;	// in window points, clipped to the tile
 	case PhoneLayout::Kind::Meter:
 	case PhoneLayout::Kind::Menu:
 	case PhoneLayout::Kind::Shovel:
@@ -190,10 +225,14 @@ void Overlay(LawnApp* theApp, const PresentationTile& theTile)
 	default:
 		return;
 	}
-	aTransform.Translate(static_cast<float>(theTile.mDest.mX), static_cast<float>(theTile.mDest.mY));
+	if (aKind != PhoneLayout::Kind::Weather)
+		aTransform.Translate(static_cast<float>(theTile.mDest.mX), static_cast<float>(theTile.mDest.mY));
 
 	Graphics g(theApp->mWidgetManager->mImage);
 	g.mClipRect = Rect(-100000, -100000, 200000, 200000);	// the transform puts it in the window; nothing to clip
+	if (aKind == PhoneLayout::Kind::Weather)
+		g.mClipRect = Rect(static_cast<int>(std::floor(theTile.mDest.mX)), static_cast<int>(std::floor(theTile.mDest.mY)),
+			static_cast<int>(std::ceil(theTile.mDest.mWidth)) + 1, static_cast<int>(std::ceil(theTile.mDest.mHeight)) + 1);
 	g.SetLinearBlend(true);
 	theApp->mGLInterface->PushTransform(aTransform, false);
 	switch (aKind)
@@ -206,6 +245,16 @@ void Overlay(LawnApp* theApp, const PresentationTile& theTile)
 	case PhoneLayout::Kind::SunCounter:
 		DrawSunCounter(&g, aBoard);
 		break;
+	case PhoneLayout::Kind::Weather:
+		if (aBoard->mChallenge && theApp->IsStormyNightLevel())
+			aBoard->mChallenge->DrawStormDarkness(&g);
+		break;
+	case PhoneLayout::Kind::Conveyor:
+	{
+		double aScale = theTile.mDest.mWidth / (PhoneLayout::CARD_WIDTH + 2 * PhoneLayout::CONVEYOR_PAD);
+		DrawConveyor(&g, aBoard, static_cast<int>(std::ceil(theTile.mDest.mHeight / aScale)), static_cast<int>(PhoneLayout::CARD_WIDTH + 2 * PhoneLayout::CONVEYOR_PAD));
+		break;
+	}
 	case PhoneLayout::Kind::Meter:
 		theApp->mDrawingPhoneOverlay = true;
 		aBoard->DrawProgressMeter(&g);

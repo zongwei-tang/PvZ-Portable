@@ -135,6 +135,7 @@ public:
 	void                    BeghouledClearCrater(int theCount);
 	void                    MouseDownWhackAZombie(int theX, int theY);
 	void                    DrawStormNight(Graphics* g);
+	void                    DrawStormDarkness(Graphics* g);
 	void                    UpdateStormyNight();
 	void                    InitLevel();
 	void                    SpawnZombieWave();

@@ -9,6 +9,7 @@
 #include "PhoneLayoutSelfTest.h"
 #include "LawnApp.h"
 #include "Lawn/Board.h"
+#include "Lawn/Challenge.h"
 #include "Lawn/CursorObject.h"
 #include "Lawn/Cutscene.h"
 #include "Lawn/Plant.h"
@@ -38,7 +39,7 @@ namespace
 
 enum class Step
 {
-	Start, Loading, NextLevel, Intro, WaitTiled, RefOff, RefCapture, TiledOn, TiledCapture,
+	Start, Loading, MainMenu, NextLevel, Intro, WaitTiled, RefOff, RefCapture, TiledOn, TiledCapture,
 	PickPacket, PlacePlant, PickShovel, Dig, Menu, MenuClosed, Watch, Done
 };
 
@@ -68,6 +69,7 @@ struct State
 	GLInterface::FrameCapture mRef;
 	bool					mSuppress = false;
 	int						mPacket = -1, mCol = -1, mRow = -1;
+	int						mChooserTicks = 0;	// the seed chooser up
 	Plant*					mPlant = nullptr;
 	Plant*					mPlantBefore = nullptr;	// the pot or lily pad it goes on, if any
 	bool					mLastTiled = false;
@@ -200,7 +202,7 @@ void CheckPicture(LawnApp* theApp, const GLInterface::FrameCapture& theRef, cons
 	{
 		const PresentationTile& t = aTiles[i];
 		Log("  tile {}{}: ({:.1f},{:.1f} {:.1f}x{:.1f}) -> window ({:.1f},{:.1f} {:.1f}x{:.1f}), x{:.3f}", i,
-			t.mImage ? " (backdrop image)" : t.mOverlay == 2 ? " (card)" : t.mOverlay == 3 ? " (sun counter)" : t.mOverlay == 4 ? " (progress meter)" : t.mOverlay == 5 ? " (menu button)" : t.mOverlay == 6 ? " (shovel)" : "",
+			t.mImage ? " (backdrop image)" : t.mOverlay == 2 ? " (card)" : t.mOverlay == 3 ? " (sun counter)" : t.mOverlay == 4 ? " (progress meter)" : t.mOverlay == 5 ? " (menu button)" : t.mOverlay == 6 ? " (shovel)" : t.mOverlay == 7 ? " (conveyor belt)" : t.mOverlay == 8 ? " (weather)" : "",
 			t.mSource.mX, t.mSource.mY, t.mSource.mWidth, t.mSource.mHeight, t.mDest.mX, t.mDest.mY, t.mDest.mWidth,
 			t.mDest.mHeight, t.mDest.mWidth / t.mSource.mWidth);
 	}
@@ -208,6 +210,21 @@ void CheckPicture(LawnApp* theApp, const GLInterface::FrameCapture& theRef, cons
 	Check(!theRef.mTiled && theRef.mLetterboxWidth > 0, "the frame to compare with was drawn letterboxed");
 	if (!theTiled.mTiled || theRef.mTiled || theRef.mWindow.empty() || theTiled.mLogical.empty())
 		return;
+
+	// the stormy night is dark but for its lightning, over the game's screen and (as a tile of weather) over each piece of
+	// the backdrop: what it shows is not checked, only looked at
+	if (theApp->IsStormyNightLevel())
+	{
+		size_t aBackdrops = 0, aWeather = 0;
+		for (const PresentationTile& t : aTiles)
+		{
+			aBackdrops += t.mImage != nullptr;
+			aWeather += t.mOverlay == 8;
+		}
+		Log("  a stormy night: {} pieces of the backdrop, {} of weather over them; the picture is not checked", aBackdrops, aWeather);
+		Check(aWeather == aBackdrops, "the darkness of the storm is over every piece of the backdrop");
+		return;
+	}
 
 	// 1. the texture holds the same picture as the letterboxed screen (a few frames apart: some things move), but for
 	// what the layout draws into the window instead: the seed bank (all of it around the packets and the sun counter),
@@ -219,6 +236,8 @@ void CheckPicture(LawnApp* theApp, const GLInterface::FrameCapture& theRef, cons
 		if (t.mOverlay == 0)
 			continue;
 		aMoved.push_back(FRect(t.mSource.mX - 3, t.mSource.mY - 3, t.mSource.mWidth + 6, t.mSource.mHeight + 6));
+		if (t.mOverlay == 7)	// the conveyor belt: where the game has it
+			aMoved.push_back(FRect(t.mSource.mX - 8, 0, t.mSource.mWidth + 16, t.mSource.mHeight + 4));
 		if (t.mOverlay == 2 || t.mOverlay == 3)
 		{
 			double aRight = std::max(aBank.mX + aBank.mWidth, t.mSource.mX + t.mSource.mWidth);
@@ -373,6 +392,59 @@ void SaveWindow(const GLInterface::FrameCapture& c, const std::string& theLevel)
 	Log("  picture of the window: {}", ImageLib::WritePNGImage(aPath, &anImage) ? aPath : std::string("could not be written"));
 }
 
+// --- framed: outside the level layout ------------------------------------------------------------------------------
+
+// the frame is in the phone layout of a level (and has been for a frame: tiles apply with the next one)
+bool InLevelLayout(LawnApp* theApp)
+{
+	return theApp->mPhonePresentation == LawnApp::PhonePresentation::Level && theApp->mGLInterface->IsTiled();
+}
+
+// a frame shown framed: the game's screen as tall as the window in the middle of the safe area, over its blurred copy,
+// and nothing black right of the safe area's left edge
+void CheckFramed(const GLInterface::FrameCapture& c, const std::string& theWhat)
+{
+	const PresentationTile* aBlur = nullptr;
+	const PresentationTile* aScreen = nullptr;
+	for (const PresentationTile& t : c.mTiles)
+	{
+		if (t.mBlur)
+			aBlur = &t;
+		else if (t.mOverlay == 0 && t.mImage == nullptr)
+			aScreen = &t;
+	}
+	Check(c.mTiled && aBlur && aScreen && c.mTiles.size() == 2, theWhat + " is framed: the game's screen over its blurred copy");
+	if (!aBlur || !aScreen)
+		return;
+	double aSafeLeft = gState.mHasSafe ? gState.mSafe.x : 0, aSafeWidth = gState.mHasSafe ? gState.mSafe.w : c.mPointWidth;
+	Log("  {}: the game's screen at ({:.1f},{:.1f} {:.1f}x{:.1f}), the blurred copy over ({:.0f},{:.0f} {:.0f}x{:.0f})", theWhat, aScreen->mDest.mX,
+		aScreen->mDest.mY, aScreen->mDest.mWidth, aScreen->mDest.mHeight, aBlur->mDest.mX, aBlur->mDest.mY, aBlur->mDest.mWidth, aBlur->mDest.mHeight);
+	Check(std::abs(aScreen->mDest.mHeight - c.mPointHeight) < 1 && std::abs(aScreen->mDest.mWidth / aScreen->mDest.mHeight - 800.0 / 600.0) < 1e-6,
+		theWhat + ": the game's screen is as tall as the window");
+	Check(std::abs(aScreen->mDest.mX + aScreen->mDest.mWidth / 2 - (aSafeLeft + aSafeWidth / 2)) < 1, theWhat + ": the game's screen is in the middle of the safe area");
+	Check(aBlur->mDest.mX <= 0 && aBlur->mDest.mY <= 0 && aBlur->mDest.mWidth >= c.mPointWidth && aBlur->mDest.mHeight >= c.mPointHeight,
+		theWhat + ": the blurred copy covers the window");
+	int aSamples = 0, aBlack = 0, aSides = 0, aSidesLit = 0;
+	for (double y = 1; y < c.mPointHeight; y += 2)
+	{
+		for (double x = aSafeLeft + 1; x < c.mPointWidth; x += 2)
+		{
+			int b = Brightness(Window(c, x, y));
+			aSamples++;
+			aBlack += b <= 12;
+			if (x < aScreen->mDest.mX - 1 || x > aScreen->mDest.mX + aScreen->mDest.mWidth + 1)
+			{
+				aSides++;
+				aSidesLit += b > 12;
+			}
+		}
+	}
+	Log("  {}: {:.2f}% black right of the safe area's left edge; beside the game's screen {:.1f}% lit", theWhat, 100.0 * aBlack / std::max(1, aSamples),
+		100.0 * aSidesLit / std::max(1, aSides));
+	Check(aBlack * 100 < aSamples * 3, theWhat + ": nothing large is black right of the safe area's left edge");
+	Check(aSidesLit * 100 > aSides * 90, theWhat + ": beside the game's screen the blurred copy shows");
+}
+
 // --- taps through the tiles ----------------------------------------------------------------------------------------
 
 bool ToWindow(LawnApp* theApp, double theX, double theY, double& theWindowX, double& theWindowY)
@@ -442,6 +514,9 @@ std::vector<Level> ParseLevels(const char* theList)
 		{ "survival pool", GameMode::GAMEMODE_SURVIVAL_NORMAL_STAGE_3, 0, 2 },
 		{ "survival fog", GameMode::GAMEMODE_SURVIVAL_NORMAL_STAGE_4, 0, 3 },
 		{ "survival roof", GameMode::GAMEMODE_SURVIVAL_NORMAL_STAGE_5, 0, 0 },
+		{ "adventure 1-10", GameMode::GAMEMODE_ADVENTURE, 10, 0 },		// a conveyor belt
+		{ "adventure 2-10", GameMode::GAMEMODE_ADVENTURE, 20, 0 },		// a conveyor belt at night
+		{ "adventure 4-10", GameMode::GAMEMODE_ADVENTURE, 40, 0 },		// a conveyor belt, in a stormy night: dark but for lightning
 	};
 	if (theList == nullptr || theList[0] == '\0')
 		return aAll;
@@ -538,7 +613,7 @@ void WatchLayout(LawnApp* theApp)
 {
 	if (theApp->mGameScene != GameScenes::SCENE_PLAYING)
 		return;
-	bool aTiled = theApp->mGLInterface->IsTiled();
+	bool aTiled = InLevelLayout(theApp);
 	gState.mPlayTicks++;
 	gState.mTiledTicks += aTiled;
 	if (aTiled != gState.mLastTiled)
@@ -576,6 +651,12 @@ void Update(LawnApp* theApp)
 	}
 	WatchLayout(theApp);
 	Board* aBoard = theApp->mBoard;
+	if (aBoard && aBoard->mChallenge && theApp->IsStormyNightLevel() && theApp->mGameScene == GameScenes::SCENE_PLAYING)
+	{
+		// a flash of lightning held, for something to see in the pictures
+		aBoard->mChallenge->mChallengeState = ChallengeState::STATECHALLENGE_STORM_FLASH_3;
+		aBoard->mChallenge->mChallengeStateCounter = 75;
+	}
 	GLInterface* aGL = theApp->mGLInterface.get();
 
 	switch (gState.mStep)
@@ -602,7 +683,32 @@ void Update(LawnApp* theApp)
 		Check(theApp->mPlayerInfo != nullptr, "a profile to play with");
 		if (theApp->mPlayerInfo == nullptr)
 			Finish();
-		Goto(Step::NextLevel);
+		Goto(gState.mShow ? Step::NextLevel : Step::MainMenu);
+		break;
+
+	case Step::MainMenu:
+		// the main menu, framed
+		if (gState.mTicks == 1)
+		{
+			if (!theApp->mGameSelector)
+				theApp->ShowGameSelector();
+			Log("");
+			Log("main menu");
+		}
+		else if (gState.mTicks == 200)
+			aGL->mCapture.mRequested = true;
+		else if (gState.mTicks > 200 && aGL->mCapture.mDone)
+		{
+			CheckFramed(aGL->mCapture, "the main menu");
+			SaveWindow(aGL->mCapture, "main menu");
+			aGL->mCapture = GLInterface::FrameCapture{};
+			Goto(Step::NextLevel);
+		}
+		else if (gState.mTicks > 1000)
+		{
+			Check(false, "the main menu was captured");
+			Goto(Step::NextLevel);
+		}
 		break;
 
 	case Step::NextLevel:
@@ -625,6 +731,7 @@ void Update(LawnApp* theApp)
 		gState.mOffReasons.clear();
 		gState.mLastTiled = false;
 		gState.mPlant = nullptr;
+		gState.mChooserTicks = 0;
 		Log("");
 		Log("{}", gState.mLevels[gState.mLevel].mName);
 		StartLevel(theApp, gState.mLevels[gState.mLevel]);
@@ -643,7 +750,28 @@ void Update(LawnApp* theApp)
 			break;
 		}
 		if (theApp->mSeedChooserScreen && aBoard && aBoard->mCutScene && aBoard->mCutScene->mSeedChoosing)
+		{
+			// the seed chooser, framed: a picture of it once it is up, then seeds picked at random
+			gState.mChooserTicks++;
+			if (gState.mChooserTicks == 150)
+			{
+				gFastMo = false;	// a frame drawn for the picture before going on
+				aGL->mCapture = GLInterface::FrameCapture{};
+				aGL->mCapture.mRequested = true;
+			}
+			if (gState.mChooserTicks <= 150 || (!aGL->mCapture.mDone && gState.mChooserTicks < 1000))
+				break;
+			gFastMo = true;
+			if (aGL->mCapture.mDone)
+			{
+				CheckFramed(aGL->mCapture, "the seed chooser");
+				SaveWindow(aGL->mCapture, gState.mLevels[gState.mLevel - 1].mName + " seed chooser");
+				aGL->mCapture = GLInterface::FrameCapture{};
+			}
 			theApp->mSeedChooserScreen->PickRandomSeeds();
+		}
+		if (aBoard && aBoard->mCutScene && aBoard->mCutScene->IsShowingCrazyDave() && gState.mTicks % 30 == 0)
+			aBoard->mCutScene->AdvanceCrazyDaveDialog(false);	// Crazy Dave talks before some levels: on to the next line
 		if (theApp->mGameScene == GameScenes::SCENE_PLAYING)
 		{
 			gFastMo = false;
@@ -655,11 +783,12 @@ void Update(LawnApp* theApp)
 			Goto(Step::WaitTiled);
 		}
 		else if (gState.mTicks > 100 * 60)
-			FailLevel("the level started within a minute");
+			FailLevel(std::format("the level started within a minute (scene {}, {} dialogs, cutscene {})", static_cast<int>(theApp->mGameScene),
+				theApp->GetDialogCount(), aBoard && aBoard->mCutScene ? "yes" : "no"));
 		break;
 
 	case Step::WaitTiled:
-		if (aGL->IsTiled() && gState.mTicks > 300)
+		if (InLevelLayout(theApp) && gState.mTicks > 300)
 		{
 			Goto(Step::RefOff);
 			break;
@@ -672,6 +801,7 @@ void Update(LawnApp* theApp)
 		gState.mSuppress = true;
 		if (!aGL->IsTiled() && gState.mTicks > 3)
 		{
+			aGL->mCapture = GLInterface::FrameCapture{};
 			aGL->mCapture.mRequested = true;
 			Goto(Step::RefCapture);
 		}
@@ -688,7 +818,7 @@ void Update(LawnApp* theApp)
 		break;
 
 	case Step::TiledOn:
-		if (aGL->IsTiled() && gState.mTicks > 3)
+		if (InLevelLayout(theApp) && gState.mTicks > 3)
 		{
 			aGL->mCapture.mRequested = true;
 			Goto(Step::TiledCapture);
@@ -711,17 +841,35 @@ void Update(LawnApp* theApp)
 
 	case Step::PickPacket:
 	{
-		if (!aGL->IsTiled())
+		if (!InLevelLayout(theApp))
 			break;
 		aBoard->mSunMoney = 9990;
 		SeedBank& aBank = *aBoard->mSeedBank;
+		if (aBoard->HasConveyorBeltSeedBank() && aBank.GetNumSeedsOnConveyorBelt() == 0)
+		{
+			aBank.AddSeed(SeedType::SEED_PEASHOOTER, true);	// none has come yet: one at the start of the belt
+			Goto(Step::PickPacket);
+			break;
+		}
+		if (aBoard->HasConveyorBeltSeedBank() && aBank.mSeedPackets[0].mOffsetX > 0)
+		{
+			// the belt on until the first packet is at its start (one coming in past the belt's end cannot be taken)
+			int aShift = aBank.mSeedPackets[0].mOffsetX;
+			for (int i = 0; i < aBank.mNumPackets; i++)
+				aBank.mSeedPackets[i].mOffsetX = std::max(0, aBank.mSeedPackets[i].mOffsetX - aShift);
+			Goto(Step::PickPacket);
+			break;
+		}
+		if (gState.mTicks < 20)
+			break;	// the layout has the cards of the packets as they are now
 		gState.mPacket = -1;
 		for (int i = 0; i < aBank.mNumPackets && gState.mPacket < 0; i++)
 		{
 			SeedType aType = aBank.mSeedPackets[i].mPacketType;
 			if (aType == SeedType::SEED_NONE || aType == SeedType::SEED_IMITATER || aType == SeedType::SEED_CHERRYBOMB ||
 				aType == SeedType::SEED_JALAPENO || aType == SeedType::SEED_SQUASH || aType == SeedType::SEED_DOOMSHROOM ||
-				aType == SeedType::SEED_ICESHROOM || aType == SeedType::SEED_BLOVER || aType == SeedType::SEED_INSTANT_COFFEE)
+				aType == SeedType::SEED_ICESHROOM || aType == SeedType::SEED_BLOVER || aType == SeedType::SEED_INSTANT_COFFEE ||
+				aType == SeedType::SEED_GRAVEBUSTER)	// gone when used, or (the grave buster) not to be dug up
 				continue;
 			for (int aCol : { 4, 3, 5, 2, 6, 1, 7, 0, 8 })
 			{
@@ -738,7 +886,7 @@ void Update(LawnApp* theApp)
 				}
 			}
 		}
-		if (gState.mPacket < 0 && aBoard->StageHasRoof() && gState.mTicks < 5)
+		if (gState.mPacket < 0 && aBoard->StageHasRoof() && gState.mTicks < 25)
 		{
 			// the roof takes plants in pots: some in the middle, and look again next time
 			for (int aRow = 1; aRow <= 3; aRow++)
@@ -747,7 +895,7 @@ void Update(LawnApp* theApp)
 						aBoard->AddPlant(aCol, aRow, SeedType::SEED_FLOWERPOT, SeedType::SEED_NONE);
 			break;
 		}
-		if (gState.mPacket < 0 && gState.mTicks < 10 && aBank.mNumPackets > 0 &&
+		if (gState.mPacket < 0 && gState.mTicks < 40 && aBank.mNumPackets > 0 &&
 			aBank.mSeedPackets[0].mPacketType != SeedType::SEED_PEASHOOTER)
 		{
 			aBank.mSeedPackets[0].SetPacketType(SeedType::SEED_PEASHOOTER);	// none of the seeds picked at random fits
@@ -765,7 +913,7 @@ void Update(LawnApp* theApp)
 		aPacket.mRefreshing = false;
 		Log("  packet {} ({} of {}), to plant at column {} row {}", gState.mPacket, static_cast<int>(aPacket.mPacketType), aBank.mNumPackets,
 			gState.mCol, gState.mRow);
-		TapLogical(theApp, aBank.mX + aPacket.mX + aPacket.mWidth / 2.0, aBank.mY + aPacket.mY + aPacket.mHeight / 2.0, "the packet");
+		TapLogical(theApp, aBank.mX + aPacket.mX + aPacket.mOffsetX + aPacket.mWidth / 2.0, aBank.mY + aPacket.mY + aPacket.mHeight / 2.0, "the packet");
 		Goto(Step::PlacePlant);
 		break;
 	}
@@ -834,7 +982,17 @@ void Update(LawnApp* theApp)
 		else if (gState.mTicks == 30)
 		{
 			Check(theApp->GetDialogCount() > 0, "tapping the menu button opened the menu");
-			Check(!aGL->IsTiled(), "the menu is shown letterboxed");
+			Check(theApp->mPhonePresentation == LawnApp::PhonePresentation::Framed, "the menu is shown framed, out of the level layout");
+			aGL->mCapture.mRequested = true;
+		}
+		else if (gState.mTicks > 30 && (aGL->mCapture.mDone || gState.mTicks > 300))
+		{
+			if (aGL->mCapture.mDone)
+			{
+				CheckFramed(aGL->mCapture, "the menu");
+				SaveWindow(aGL->mCapture, gState.mLevels[gState.mLevel - 1].mName + " menu");
+			}
+			aGL->mCapture = GLInterface::FrameCapture{};
 			theApp->KillNewOptionsDialog();
 			while (theApp->GetDialogCount() > 0 && !theApp->mDialogMap.empty())
 				theApp->KillDialog(theApp->mDialogMap.begin()->first);
@@ -843,7 +1001,7 @@ void Update(LawnApp* theApp)
 		break;
 
 	case Step::MenuClosed:
-		if (aGL->IsTiled())
+		if (InLevelLayout(theApp) && gState.mTicks > 3)
 			StartWatch();
 		else if (gState.mTicks > 200)
 		{

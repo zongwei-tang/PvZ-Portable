@@ -14,9 +14,10 @@
 class LawnApp;
 
 // A test of the phone layout in the running game, built with -DPHONE_LAYOUT_SELFTEST=ON and run by
-// tests/phone_layout_selftest.sh: it sizes the window as a phone's, plays some levels by itself, taps packets, the lawn,
-// the shovel and the menu button through the tiles, reads back what is drawn and checks it, and writes what it found as
-// text. Nothing of it is in other builds.
+// tests/phone_layout_selftest.sh: it sizes the window as a phone's, plays some levels by itself (conveyor belt levels
+// among them), taps packets, the lawn, the shovel and the menu button through the tiles, reads back what is drawn and
+// checks it (the levels in their layout; the main menu, the seed chooser and the menu framed), saves pictures of the
+// window, and writes what it found as text. Nothing of it is in other builds.
 namespace PhoneLayoutSelfTest
 {
 

@@ -190,6 +190,8 @@ struct PresentationTile
 	int						mOverlay = 0;
 	int						mOverlayIndex = -1;
 	bool					mNoTap = false;
+	// the piece of the logical screen blurred and dimmed, as a background around it; no tap goes to it
+	bool					mBlur = false;
 };
 
 class GLInterface : public NativeDisplay
@@ -248,7 +250,8 @@ public:
 	void					Flush();
 
 	// Tiled presentation: with tiles, a frame is drawn into a texture of the logical screen, and Flush() shows the tiles
-	// of it in the window instead of the letterboxed screen (the phone layout of a level). New tiles take effect with the
+	// of it in the window instead of the letterboxed screen (the phone layout of a level, or the screen framed over a
+	// blurred copy of itself). New tiles take effect with the
 	// next frame; none goes back to the letterboxed screen. Tiles are drawn in their order. MapWindowToLogical maps a
 	// window point through the topmost tile of the logical screen under it: false without tiles, and a point under none
 	// maps far outside the logical screen.
@@ -289,8 +292,18 @@ private:
 	int						mTileTextureHeight = 0;
 	int						mLetterboxX = 0, mLetterboxY = 0, mLetterboxWidth = 0, mLetterboxHeight = 0;
 
+	static constexpr int	BLUR_STEPS = 4;		// halvings of the logical screen for a blurred tile: 1/2 ... 1/16
+	unsigned int			mBlurFramebuffer[BLUR_STEPS] = {};
+	unsigned int			mBlurTexture[BLUR_STEPS] = {};
+	int						mBlurWidth[BLUR_STEPS] = {}, mBlurHeight[BLUR_STEPS] = {};
+
 	unsigned int			WindowFramebuffer();
 	bool					EnsureTileTarget();
+	bool					EnsureBlurTargets();
+	void					ReleaseBlurTargets();
+	void					DrawTextureQuad(unsigned int theTexture, int theTextureWidth, int theTextureHeight, float u0, float vTop, float u1, float vBottom,
+								float x0, float y0, float x1, float y1, uint32_t theColor);
+	void					PresentBlurred(const PresentationTile& theTile, int theWindowWidth, int theWindowHeight, int thePixelWidth, int thePixelHeight);
 	void					BindFrameTarget(bool theClear);
 	void					PresentTiles();
 	void					ReleaseTileTarget();

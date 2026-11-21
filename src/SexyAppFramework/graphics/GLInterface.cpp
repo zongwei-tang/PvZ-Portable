@@ -1449,7 +1449,7 @@ bool GLInterface::MapWindowToLogical(double& theX, double& theY) const
 	{
 		const PresentationTile& aTile = *anItr;
 		const FRect& d = aTile.mDest;
-		if (aTile.mImage != nullptr)
+		if (aTile.mImage != nullptr || aTile.mBlur)
 			continue;
 		if (aTile.mNoTap && theX >= d.mX && theX < d.mX + d.mWidth && theY >= d.mY && theY < d.mY + d.mHeight)
 			break;	// it takes the tap, and nothing under it gets it
@@ -1481,7 +1481,7 @@ bool GLInterface::EnsureTileTarget()
 	double aScale = 1;
 	for (const PresentationTile& aTile : mTiles)
 	{
-		if (aTile.mSource.mWidth > 0 && aTile.mImage == nullptr && aTile.mOverlay == 0)
+		if (aTile.mSource.mWidth > 0 && aTile.mImage == nullptr && aTile.mOverlay == 0 && !aTile.mBlur)
 			aScale = std::max(aScale, aTile.mDest.mWidth / aTile.mSource.mWidth * aPixelWidth / aWindowWidth);
 	}
 	aScale = std::min(aScale, 3.0);
@@ -1525,8 +1525,136 @@ bool GLInterface::EnsureTileTarget()
 	return true;
 }
 
+// The small textures a blurred tile is made in: the logical screen halved, and halved again, BLUR_STEPS times
+bool GLInterface::EnsureBlurTargets()
+{
+	if (mBlurFramebuffer[0] != 0)
+		return true;
+	GfxFlush();
+	for (int i = 0; i < BLUR_STEPS; i++)
+	{
+		int aWidth = std::max(1, mWidth >> (i + 1)), aHeight = std::max(1, mHeight >> (i + 1));
+		GLuint aTexture = 0, aFramebuffer = 0;
+		glGenTextures(1, &aTexture);
+		glBindTexture(GL_TEXTURE_2D, aTexture);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, aWidth, aHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+		glGenFramebuffers(1, &aFramebuffer);
+		glBindFramebuffer(GL_FRAMEBUFFER, aFramebuffer);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, aTexture, 0);
+		bool aComplete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+		mBlurFramebuffer[i] = aFramebuffer;
+		mBlurTexture[i] = aTexture;
+		mBlurWidth[i] = aWidth;
+		mBlurHeight[i] = aHeight;
+		if (!aComplete)
+		{
+			glBindFramebuffer(GL_FRAMEBUFFER, WindowFramebuffer());
+			ReleaseBlurTargets();
+			return false;
+		}
+	}
+	glBindFramebuffer(GL_FRAMEBUFFER, WindowFramebuffer());
+	gAppliedTextureValid = false;
+	return true;
+}
+
+void GLInterface::ReleaseBlurTargets()
+{
+	for (int i = 0; i < BLUR_STEPS; i++)
+	{
+		GLuint aFramebuffer = mBlurFramebuffer[i], aTexture = mBlurTexture[i];
+		if (aFramebuffer != 0)
+			glDeleteFramebuffers(1, &aFramebuffer);
+		if (aTexture != 0)
+			glDeleteTextures(1, &aTexture);
+		mBlurFramebuffer[i] = mBlurTexture[i] = 0;
+		mBlurWidth[i] = mBlurHeight[i] = 0;
+	}
+	gAppliedTextureValid = false;
+}
+
+// A textured rectangle through the batch, a copy (alpha and all) tinted by theColor, in the projection set
+void GLInterface::DrawTextureQuad(unsigned int theTexture, int theTextureWidth, int theTextureHeight, float u0, float vTop, float u1, float vBottom,
+	float x0, float y0, float x1, float y1, uint32_t theColor)
+{
+	float aHalfTexelU = 0.5f / theTextureWidth, aHalfTexelV = 0.5f / theTextureHeight;
+	gDrawState = GfxDrawState{};
+	gDrawState.texture = theTexture;
+	gDrawState.blendSrc = GL_ONE;
+	gDrawState.blendDst = GL_ZERO;
+	gDrawState.filter = GL_LINEAR;
+	gDrawState.useTexture = 1;
+	gDrawState.clampUv = 1;
+	gDrawState.uvBounds[0] = std::min(u0, u1) + aHalfTexelU;
+	gDrawState.uvBounds[1] = std::min(vTop, vBottom) + aHalfTexelV;
+	gDrawState.uvBounds[2] = std::max(u0, u1) - aHalfTexelU;
+	gDrawState.uvBounds[3] = std::max(vTop, vBottom) - aHalfTexelV;
+	GLVertex aQuad[6] = {
+		{ x0, y0, 0, theColor, u0, vTop }, { x1, y0, 0, theColor, u1, vTop }, { x0, y1, 0, theColor, u0, vBottom },
+		{ x1, y0, 0, theColor, u1, vTop }, { x1, y1, 0, theColor, u1, vBottom }, { x0, y1, 0, theColor, u0, vBottom },
+	};
+	GfxBegin(GL_TRIANGLES);
+	GfxAddVertices(aQuad, 6);
+	GfxEnd();
+}
+
+// A blurred tile: the texture of the logical screen halved into ever smaller textures, then doubled back up through them,
+// and the result, filtered, drawn stretched over the tile and dimmed. Leaves the window bound, with its projection.
+void GLInterface::PresentBlurred(const PresentationTile& theTile, int theWindowWidth, int theWindowHeight, int thePixelWidth, int thePixelHeight)
+{
+	if (!EnsureBlurTargets() || theTile.mSource.mWidth <= 0 || theTile.mSource.mHeight <= 0)
+		return;
+	GfxFlush();
+	float anOrtho[16];
+	// the textures hold the logical screen bottom up, as the texture of the logical screen does: its top at v = 1
+	GLuint aSource = mTileTexture;
+	int aSourceWidth = mTileTextureWidth, aSourceHeight = mTileTextureHeight;
+	for (int i = 0; i < BLUR_STEPS; i++)
+	{
+		glBindFramebuffer(GL_FRAMEBUFFER, mBlurFramebuffer[i]);
+		glViewport(0, 0, mBlurWidth[i], mBlurHeight[i]);
+		MakeOrthoMatrix(0, static_cast<float>(mBlurWidth[i]), static_cast<float>(mBlurHeight[i]), 0, -10, 10, anOrtho);
+		glUniformMatrix4fv(gUfViewProjMtx, 1, GL_FALSE, anOrtho);
+		DrawTextureQuad(aSource, aSourceWidth, aSourceHeight, 0, 1, 1, 0, 0, 0, static_cast<float>(mBlurWidth[i]), static_cast<float>(mBlurHeight[i]), 0xFFFFFFFFu);
+		GfxFlush();
+		aSource = mBlurTexture[i];
+		aSourceWidth = mBlurWidth[i];
+		aSourceHeight = mBlurHeight[i];
+	}
+	// and back up through them, each step filtered: smoother than stretching the smallest at once
+	for (int i = BLUR_STEPS - 2; i >= 0; i--)
+	{
+		glBindFramebuffer(GL_FRAMEBUFFER, mBlurFramebuffer[i]);
+		glViewport(0, 0, mBlurWidth[i], mBlurHeight[i]);
+		MakeOrthoMatrix(0, static_cast<float>(mBlurWidth[i]), static_cast<float>(mBlurHeight[i]), 0, -10, 10, anOrtho);
+		glUniformMatrix4fv(gUfViewProjMtx, 1, GL_FALSE, anOrtho);
+		DrawTextureQuad(aSource, aSourceWidth, aSourceHeight, 0, 1, 1, 0, 0, 0, static_cast<float>(mBlurWidth[i]), static_cast<float>(mBlurHeight[i]), 0xFFFFFFFFu);
+		GfxFlush();
+		aSource = mBlurTexture[i];
+		aSourceWidth = mBlurWidth[i];
+		aSourceHeight = mBlurHeight[i];
+	}
+	glBindFramebuffer(GL_FRAMEBUFFER, WindowFramebuffer());
+	glViewport(0, 0, thePixelWidth, thePixelHeight);
+	MakeOrthoMatrix(0, static_cast<float>(theWindowWidth), static_cast<float>(theWindowHeight), 0, -10, 10, anOrtho);
+	glUniformMatrix4fv(gUfViewProjMtx, 1, GL_FALSE, anOrtho);
+	float u0 = static_cast<float>(theTile.mSource.mX / mWidth), u1 = static_cast<float>((theTile.mSource.mX + theTile.mSource.mWidth) / mWidth);
+	float vTop = 1.0f - static_cast<float>(theTile.mSource.mY / mHeight), vBottom = 1.0f - static_cast<float>((theTile.mSource.mY + theTile.mSource.mHeight) / mHeight);
+	const uint32_t DIMMED = 0xFF808080u;	// half as bright: what is in the middle stands out
+	DrawTextureQuad(aSource, aSourceWidth, aSourceHeight, u0, vTop, u1, vBottom, static_cast<float>(theTile.mDest.mX), static_cast<float>(theTile.mDest.mY),
+		static_cast<float>(theTile.mDest.mX + theTile.mDest.mWidth), static_cast<float>(theTile.mDest.mY + theTile.mDest.mHeight), DIMMED);
+	GfxFlush();
+	gAppliedStateValid = false;
+	gAppliedTextureValid = false;
+}
+
 void GLInterface::ReleaseTileTarget()
 {
+	ReleaseBlurTargets();
 	if (mTileFramebuffer != 0)
 	{
 		GLuint aFramebuffer = mTileFramebuffer;
@@ -1604,6 +1732,11 @@ void GLInterface::PresentTiles()
 	float aHalfTexelU = 0.5f / mTileTextureWidth, aHalfTexelV = 0.5f / mTileTextureHeight;
 	for (const PresentationTile& aTile : mTiles)
 	{
+		if (aTile.mBlur)
+		{
+			PresentBlurred(aTile, aWindowWidth, aWindowHeight, aPixelWidth, aPixelHeight);
+			continue;
+		}
 		if (aTile.mOverlay != 0)
 		{
 			// drawn by the game into the window, through the transforms and clipping it sets up itself

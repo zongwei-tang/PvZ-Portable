@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -341,6 +342,57 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 		aLawnScale / aLetterboxScale * 100, aCardWidth, aCardHeight, aCoverage * 100, aTiles.size());
 }
 
+// A conveyor belt level: the belt down the left edge of the safe area as long as the window, each card over it where its
+// packet is along the belt (those past the window's bottom not shown), no sun counter, taps on a card to its packet and
+// on the belt to nothing
+void CheckConveyor(const std::string& theName, double theWidth, double theHeight, Box theSafe, const std::vector<double>& theSlots)
+{
+	std::printf("%s\n", theName.c_str());
+	Input anInput = GameInput(theWidth, theHeight, theSafe, 0, true);
+	anInput.mSunCounter = Box{};
+	anInput.mConveyorBelt = Box{ 93, 0, 516, 86 };
+	for (size_t i = 0; i < theSlots.size(); i++)
+	{
+		anInput.mPackets.push_back(Box{ 91 + 10 + theSlots[i] * 50, 8, 50, 70 });
+		anInput.mPacketSlots.push_back(theSlots[i]);
+	}
+	std::vector<Tile> aTiles = Compute(anInput);
+	Check(!aTiles.empty(), theName + ": has a layout");
+	const Tile* aBelt = nullptr;
+	std::vector<const Tile*> aCards;
+	for (const Tile& t : aTiles)
+	{
+		Check(t.mKind != Kind::SunCounter, theName + ": no sun counter");
+		if (t.mKind == Kind::Conveyor)
+			aBelt = &t;
+		if (t.mKind == Kind::Card)
+			aCards.push_back(&t);
+	}
+	Check(aBelt != nullptr, theName + ": the belt is shown");
+	if (!aBelt)
+		return;
+	Check(std::abs(aBelt->mDest.mX - (theSafe.mX + EDGE_MARGIN)) < EPSILON && std::abs(aBelt->mDest.mY - theSafe.mY) < EPSILON &&
+		std::abs(aBelt->mDest.Bottom() - theHeight) < EPSILON, theName + ": the belt runs down the left edge of the safe area, to the bottom");
+	double aScale = aBelt->mDest.mWidth / (CARD_WIDTH + 2 * CONVEYOR_PAD);
+	double aPitch = CARD_HEIGHT * aScale + CARD_GAP;
+	Check(theSafe.mY + EDGE_MARGIN + (CONVEYOR_SLOTS - 1) * aPitch + CARD_HEIGHT * aScale <= theHeight + EPSILON, theName + ": the belt has room for all its slots");
+	size_t aShown = 0;
+	for (double aSlot : theSlots)
+		aShown += theSafe.mY + EDGE_MARGIN + aSlot * aPitch < theHeight;
+	Check(aCards.size() == aShown, theName + ": a card for each packet on the window");
+	for (const Tile* t : aCards)
+	{
+		std::string aWhich = theName + ": card " + std::to_string(t->mIndex);
+		double aSlot = theSlots[t->mIndex];
+		Check(std::abs(t->mDest.mY - (theSafe.mY + EDGE_MARGIN + aSlot * aPitch)) < EPSILON, aWhich + " is where its packet is along the belt");
+		Check(Inside(Box{ t->mDest.mX, t->mDest.mY, t->mDest.mWidth, std::min(t->mDest.mHeight, theHeight - t->mDest.mY) }, aBelt->mDest), aWhich + " is over the belt");
+		double x = 0, y = 0;
+		Check(WindowToGame(aTiles, t->mDest.mX + t->mDest.mWidth / 2, t->mDest.mY + 1, x, y) && t->mSource.Contains(x, y), aWhich + ": a tap on it goes to its packet");
+	}
+	double x = 0, y = 0;
+	Check(!WindowToGame(aTiles, aBelt->mDest.mX + 1, theHeight - 1, x, y), theName + ": a tap on the belt goes nowhere");
+}
+
 }
 
 int main()
@@ -373,11 +425,43 @@ int main()
 	CheckLayout("iPhone SE", GameInput(667, 375, Box{ 0, 0, 667, 375 }, 10, true));
 	CheckLayout("iPhone 13 mini", GameInput(812, 375, Box{ 50, 0, 812 - 100, 375 - 21 }, 8, true));
 
+	// conveyor belts: packets at the belt's start, along it, one coming in past its end
+	CheckConveyor("iPhone 15, conveyor belt", 852, 393, aPhoneSafe, { 0, 1, 2.5, 7.2, 10.3 });
+	CheckConveyor("iPhone SE, conveyor belt", 667, 375, Box{ 0, 0, 667, 375 }, { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 });
+	CheckConveyor("iPhone 15 Pro Max, conveyor belt", 932, 430, Box{ 59, 0, 932 - 118, 430 - 21 }, { 0.4, 9.9 });
+	CheckConveyor("iPhone 15, empty conveyor belt", 852, 393, aPhoneSafe, {});
+
+	// framed, outside the levels: the game's screen as tall as the window in the middle of the safe area, over a blurred
+	// copy of its middle that covers the window
+	for (auto [aName, w, h, aSafe] : { std::tuple{ "iPhone 15", 852.0, 393.0, aPhoneSafe }, std::tuple{ "iPhone SE", 667.0, 375.0, Box{ 0, 0, 667, 375 } },
+		std::tuple{ "iPhone 15 Pro Max", 932.0, 430.0, Box{ 59, 0, 932 - 118, 430 - 21 } }, std::tuple{ "iPhone 15, island on the left only", 852.0, 393.0, Box{ 59, 0, 793, 372 } } })
+	{
+		std::string aWhich = std::string(aName) + ", framed";
+		std::printf("%s\n", aWhich.c_str());
+		std::vector<Tile> aFramed = ComputeFramed(w, h, aSafe, Box{ 0, 0, 800, 600 });
+		Check(aFramed.size() == 2 && aFramed[0].mKind == Kind::Blur && aFramed[1].mKind == Kind::Screen, aWhich + ": the blurred copy, then the game's screen");
+		if (aFramed.size() != 2)
+			continue;
+		const Tile& aBlur = aFramed[0];
+		const Tile& aScreenTile = aFramed[1];
+		Check(Same(aBlur.mDest, Box{ 0, 0, w, h }), aWhich + ": the blurred copy covers the window");
+		Check(std::abs(aBlur.mSource.mWidth / aBlur.mSource.mHeight - w / h) < 1e-9 && Inside(aBlur.mSource, Box{ 0, 0, 800, 600 }),
+			aWhich + ": the blurred copy is a piece of the game's screen as wide for its height as the window");
+		Check(std::abs(aScreenTile.mDest.mHeight - h) < EPSILON && Same(aScreenTile.mSource, Box{ 0, 0, 800, 600 }), aWhich + ": the game's screen is as tall as the window");
+		Check(std::abs(aScreenTile.mDest.mX + aScreenTile.mDest.mWidth / 2 - (aSafe.mX + aSafe.mWidth / 2)) < EPSILON, aWhich + ": the game's screen is in the middle of the safe area");
+		Check(aScreenTile.mDest.mX >= aSafe.mX - EPSILON && aScreenTile.mDest.Right() <= aSafe.Right() + EPSILON, aWhich + ": the game's screen is clear of the notch");
+		double x = 0, y = 0;
+		Check(WindowToGame(aFramed, aScreenTile.mDest.mX + aScreenTile.mDest.mWidth / 2, h / 2, x, y) && std::abs(x - 400) < 1e-6 && std::abs(y - 300) < 1e-6,
+			aWhich + ": a tap in the middle goes to the middle of the game's screen");
+		Check(!WindowToGame(aFramed, aScreenTile.mDest.mX / 2, h / 2, x, y), aWhich + ": a tap on the blurred copy goes nowhere");
+	}
+
 	// screens that are not wide keep the 800x600 screen
 	std::printf("narrow screens\n");
 	Check(Compute(GameInput(1180, 820, Box{ 0, 0, 1180, 800 }, 6, true)).empty(), "iPad keeps the 800x600 screen");
 	Check(Compute(GameInput(800, 600, Box{ 0, 0, 800, 600 }, 6, true)).empty(), "a 4:3 window keeps the 800x600 screen");
 	Check(Compute(GameInput(1280, 800, Box{ 0, 0, 1280, 800 }, 6, true)).empty(), "a 16:10 window keeps the 800x600 screen");
+	Check(ComputeFramed(1180, 820, Box{ 0, 0, 1180, 800 }, Box{ 0, 0, 800, 600 }).empty(), "iPad keeps the 800x600 screen letterboxed outside the levels");
 
 	// a tap outside every tile hits nothing
 	std::vector<Tile> aTiles = Compute(GameInput(852, 393, aPhoneSafe, 6, true));

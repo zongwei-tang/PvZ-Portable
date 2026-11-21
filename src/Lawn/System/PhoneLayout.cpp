@@ -76,19 +76,28 @@ std::vector<Tile> Compute(const Input& theInput)
 		}
 	}
 
-	// The game's screen, which the game draws without the seed bank and what the layout puts elsewhere
+	// The game's screen, which the game draws without the seed bank and what the layout puts elsewhere; over the
+	// backdrop the darkness the game draws over its screen, if any
+	size_t aNumBackdrops = aTiles.size();
 	aTiles.push_back(InPlace(aLawn));
+	if (theInput.mDarkWeather)
+		for (size_t i = 0; i < aNumBackdrops; i++)
+			aTiles.push_back(Tile{ aTiles[i].mSource, aTiles[i].mDest, Kind::Weather });
 
 	// The scale of the cards: as large as the phone versions have them, and smaller when they would not fit down the
-	// window (past the home indicator, as the phone versions have them) or left of the game's screen
+	// window (past the home indicator, as the phone versions have them) or left of the game's screen. On a conveyor belt
+	// the cards ride up a belt as long as the window, with room for CONVEYOR_SLOTS of them.
 	size_t n = theInput.mPackets.size();
+	bool aConveyor = !theInput.mConveyorBelt.Empty() && theInput.mPacketSlots.size() == n;
+	double aSlots = aConveyor ? CONVEYOR_SLOTS : static_cast<double>(n);
+	double aPad = aConveyor ? CONVEYOR_PAD : 0;
 	double aCardScale = MAX_CARD_HEIGHT * theInput.mScreenHeight / CARD_HEIGHT;
-	if (n > 0)
-		aCardScale = std::min(aCardScale, (theInput.mScreenHeight - aSafe.mY - 2 * EDGE_MARGIN - (n - 1) * CARD_GAP) / (n * CARD_HEIGHT));
-	aCardScale = std::min(aCardScale, (aLawnX - GAP - aSafe.mX - EDGE_MARGIN) / CARD_WIDTH);
+	if (aSlots > 0)
+		aCardScale = std::min(aCardScale, (theInput.mScreenHeight - aSafe.mY - 2 * EDGE_MARGIN - (aSlots - 1) * CARD_GAP) / (aSlots * CARD_HEIGHT));
+	aCardScale = std::min(aCardScale, (aLawnX - GAP - aSafe.mX - EDGE_MARGIN) / (CARD_WIDTH + 2 * aPad));
 	if (aCardScale <= 0)
 		return {};
-	double aColumnRight = aSafe.mX + EDGE_MARGIN + (n > 0 ? CARD_WIDTH * aCardScale : 0);
+	double aColumnRight = aSafe.mX + EDGE_MARGIN + (n > 0 || aConveyor ? (CARD_WIDTH + 2 * aPad) * aCardScale : 0);
 
 	// Along the top, right of the cards: the sun counter, then the shovel, all as high as the sun counter
 	double aBarX = aColumnRight + GAP;
@@ -142,14 +151,37 @@ std::vector<Tile> Compute(const Input& theInput)
 	if (aHasSun)
 		aTiles.push_back(aSunCounter);
 
-	// The cards, one column down the left edge of the safe area from its top
-	double aY = aSafe.mY + EDGE_MARGIN;
+	// The cards, one column down the left edge of the safe area from its top; on a conveyor belt each where its packet
+	// is along the belt, over the belt, and only those on the window
+	double aCardX = aSafe.mX + EDGE_MARGIN + aPad * aCardScale;
+	double aTop = aSafe.mY + EDGE_MARGIN;
+	double aPitch = CARD_HEIGHT * aCardScale + CARD_GAP;
+	if (aConveyor)
+		aTiles.push_back(Tile{ theInput.mConveyorBelt, Box{ aSafe.mX + EDGE_MARGIN, aSafe.mY, (CARD_WIDTH + 2 * aPad) * aCardScale, theInput.mScreenHeight - aSafe.mY },
+			Kind::Conveyor });
 	for (size_t i = 0; i < n; i++)
 	{
-		aTiles.push_back(Tile{ theInput.mPackets[i], Box{ aSafe.mX + EDGE_MARGIN, aY, CARD_WIDTH * aCardScale, CARD_HEIGHT * aCardScale }, Kind::Card,
+		double aY = aTop + (aConveyor ? std::max(0.0, theInput.mPacketSlots[i]) : static_cast<double>(i)) * aPitch;
+		if (aY >= theInput.mScreenHeight)
+			continue;
+		aTiles.push_back(Tile{ theInput.mPackets[i], Box{ aCardX, aY, CARD_WIDTH * aCardScale, CARD_HEIGHT * aCardScale }, Kind::Card,
 			static_cast<int>(i) });
-		aY += CARD_HEIGHT * aCardScale + CARD_GAP;
 	}
+	return aTiles;
+}
+
+std::vector<Tile> ComputeFramed(double theScreenWidth, double theScreenHeight, const Box& theSafeArea, const Box& theScreen)
+{
+	std::vector<Tile> aTiles;
+	if (theScreenHeight <= 0 || theScreenWidth / theScreenHeight < MIN_ASPECT || theSafeArea.Empty() || theScreen.Empty())
+		return aTiles;
+	// the blurred copy: the middle of the game's screen, as wide as it and as high as the window's shape gives
+	double aHeight = std::min(theScreen.mHeight, theScreen.mWidth * theScreenHeight / theScreenWidth);
+	aTiles.push_back(Tile{ Box{ theScreen.mX, theScreen.mY + (theScreen.mHeight - aHeight) / 2, theScreen.mWidth, aHeight },
+		Box{ 0, 0, theScreenWidth, theScreenHeight }, Kind::Blur });
+	double aScale = std::min(theScreenHeight / theScreen.mHeight, theSafeArea.mWidth / theScreen.mWidth);
+	aTiles.push_back(MakeTile(theScreen, theSafeArea.mX + (theSafeArea.mWidth - theScreen.mWidth * aScale) / 2,
+		(theScreenHeight - theScreen.mHeight * aScale) / 2, aScale));
 	return aTiles;
 }
 
@@ -158,7 +190,7 @@ bool WindowToGame(const std::vector<Tile>& theTiles, double theX, double theY, d
 	for (auto anItr = theTiles.rbegin(); anItr != theTiles.rend(); ++anItr)
 	{
 		const Tile& aTile = *anItr;
-		if (aTile.mKind == Kind::Backdrop || !aTile.mDest.Contains(theX, theY))
+		if (!aTile.TakesTaps() || !aTile.mDest.Contains(theX, theY))
 			continue;
 		if (aTile.TakesNoTap())
 			return false;
