@@ -138,20 +138,27 @@ void DrawSunCounter(Graphics* g, Board* theBoard)
 	const int aRows[4] = { 0, 8, 79, 87 };
 	Stretched(g, aBank, 0, 0, W, H, aColumns, aRows);
 	Piece(g, aBank, 2, 2, H - 4, H - 4, 14, 6, 50, 50);
-	// the paper, its ends as they are (with the tape) and its middle stretched
-	const int aPaperX = H, aPaperY = 6, aPaperWidth = W - H - 4, aPaperHeight = H - 12;
-	const int aPaperColumns[4] = { 9, 21, 57, 69 };
-	const int aPaperRows[4] = { 57, 57, 85, 85 };
+	// the paper (in the image x 11 to 66, y 61 to 83, with tape over its top corners), its ends as they are and its
+	// middle stretched
+	const int aPaperX = H, aPaperY = 5, aPaperWidth = W - H - 3, aPaperHeight = H - 10;
+	const int aPaperColumns[4] = { 6, 21, 56, 70 };
+	const int aPaperRows[4] = { 59, 59, 84, 84 };
 	Stretched(g, aBank, aPaperX, aPaperY, aPaperWidth, aPaperHeight, aPaperColumns, aPaperRows);
+	float aStretchY = aPaperHeight / 25.0f;
+	float aInsideLeft = aPaperX + (11 - 6) + 4, aInsideRight = aPaperX + aPaperWidth - (70 - 66) - 7;
+	float aInsideTop = aPaperY + (61 - 59) * aStretchY + 2, aInsideBottom = aPaperY + (83 - 59) * aStretchY - 2;
 
+	// the number inside the paper: as large as fits, centred
 	std::string aMoney = std::to_string(std::max(theBoard->mSunMoney, 0));
 	Color aColor(0, 0, 0);
 	if (theBoard->mOutOfMoneyCounter > 0 && theBoard->mOutOfMoneyCounter % 20 < 10)
 		aColor = Color(255, 0, 0);
 	_Font* aFont = FONT_CONTINUUMBOLD14;
-	const float aScale = 1.35f;
+	const float aDigitHeight = aFont->GetAscent() * 0.8f;	// the font's digits are lower than its ascent
+	float aScale = std::min({ 1.25f, (aInsideRight - aInsideLeft) / std::max(1, aFont->StringWidth(aMoney)), (aInsideBottom - aInsideTop) / aDigitHeight });
 	float aWidth = aFont->StringWidth(aMoney) * aScale;
-	ScaledString(g, aFont, aMoney, aPaperX + (aPaperWidth - aWidth) / 2, aPaperY + aPaperHeight / 2 + aFont->GetAscent() * aScale / 2 - 1, aScale, aColor);
+	// (the font draws its digits a little below the baseline it is given: 2.5 units up to centre them)
+	ScaledString(g, aFont, aMoney, (aInsideLeft + aInsideRight - aWidth) / 2, (aInsideTop + aInsideBottom + aDigitHeight * aScale) / 2 - 2.5f, aScale, aColor);
 }
 
 }
