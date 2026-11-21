@@ -40,6 +40,7 @@
 #include "Lawn/System/AppUpdater.h"
 #include "Lawn/System/PhoneLayout.h"
 #include "Lawn/System/PhoneLayoutDraw.h"
+#include "Lawn/System/MacIcon.h"
 #include "Lawn/System/SaveGame.h"
 #include "PvzpLib/PvzpDebug.h"
 #include "PvzpLib/PvzpFoley.h"
@@ -1269,6 +1270,7 @@ void LawnApp::Init()
 	mTimer.Start();
 
 	AppUpdater::Start();
+	MacIcon::Apply(GetResourcePath("icon.png"));	// the player's own icon, from the game data folder
 	CloudSave::Init();
 	mProfileMgr->Load();
 

@@ -12,12 +12,18 @@ trap 'rm -rf "$WORK"' EXIT
 ICONSET="$WORK/AppIcon.iconset"
 mkdir -p "$ICONSET"
 for size in 16 32 128 256 512; do
-	sips -z $size $size "$ROOT/icon.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
-	sips -z $((size * 2)) $((size * 2)) "$ROOT/icon.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+	# PNG out whatever the image is in (an icon.png may well be a WebP or a JPEG under that name)
+	sips -s format png -z $size $size "$ROOT/icon.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+	sips -s format png -z $((size * 2)) $((size * 2)) "$ROOT/icon.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "$WORK/AppIcon.icns"
 
 cp "$WORK/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+# and into the game data folder, from where the game puts it back on each start after an update replaced the app
+SUPPORT="$HOME/Library/Application Support/io.github.wszqkzqk/PvZPortable"
+if [ -d "$SUPPORT" ]; then
+	sips -s format png "$ROOT/icon.png" --out "$SUPPORT/icon.png" >/dev/null
+fi
 # the bundle's ad-hoc signature covers its resources: sign it again over the new icon
 codesign --force -s - "$APP"
 codesign --verify --deep --strict "$APP"

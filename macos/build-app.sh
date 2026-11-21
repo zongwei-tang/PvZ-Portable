@@ -164,8 +164,9 @@ ICONSET="$BUILD/AppIcon.iconset"
 rm -rf "$ICONSET"
 mkdir -p "$ICONSET"
 for size in 16 32 128 256 512; do
-	sips -z $size $size "$ROOT/icon.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
-	sips -z $((size * 2)) $((size * 2)) "$ROOT/icon.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+	# PNG out whatever the image is in (an icon.png may well be a WebP or a JPEG under that name)
+	sips -s format png -z $size $size "$ROOT/icon.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+	sips -s format png -z $((size * 2)) $((size * 2)) "$ROOT/icon.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "$STAGE/Contents/Resources/AppIcon.icns"
 
@@ -235,5 +236,10 @@ if [ "$INSTALL" = 1 ]; then
 	fi
 	rm -rf "$INSTALLED"
 	ditto "$APP" "$INSTALLED"
+	rm -rf "$APP"	# installed: the copy built here is not needed
+	# the icon also into the game data folder, from where the game puts it back after an update replaced the app
+	if [ -d "$SUPPORT" ]; then
+		sips -s format png "$ROOT/icon.png" --out "$SUPPORT/icon.png" >/dev/null
+	fi
 	echo "Installed. Your saves and the game data are in $SUPPORT, so they stay."
 fi
