@@ -969,7 +969,7 @@ void DrawTreeScene(Graphics* g, LawnApp* theApp, const SexyMatrix3& theToWindow)
 	SexyTransform2D aFromBoard;
 	aFromBoard.Translate(static_cast<float>(aBoard->mX), static_cast<float>(aBoard->mY));
 	SexyMatrix3 aToWindow = theToWindow * aFromBoard;
-	const float FAR = 2.0f * BOARD_WIDTH;
+	const float REACH = 2.0f * BOARD_WIDTH;
 	const int INSET = 3;	// past the pictures' outermost columns, which are a little different
 	auto Track = [&](const char* theName, ReanimatorTransform& theTransform)
 	{
@@ -984,8 +984,8 @@ void DrawTreeScene(Graphics* g, LawnApp* theApp, const SexyMatrix3& theToWindow)
 	{
 		int x = static_cast<int>(aSky.mTransX), y = static_cast<int>(aSky.mTransY);
 		theApp->mGLInterface->PushTransform(aToWindow, false);
-		g->DrawImage(anImage, Rect(static_cast<int>(-FAR), y, static_cast<int>(FAR) + x + INSET, anImage->mHeight), Rect(INSET, 0, 1, anImage->mHeight));
-		g->DrawImage(anImage, Rect(x + anImage->mWidth - INSET - 1, y, static_cast<int>(FAR), anImage->mHeight), Rect(anImage->mWidth - INSET - 1, 0, 1, anImage->mHeight));
+		g->DrawImage(anImage, Rect(static_cast<int>(-REACH), y, static_cast<int>(REACH) + x + INSET, anImage->mHeight), Rect(INSET, 0, 1, anImage->mHeight));
+		g->DrawImage(anImage, Rect(x + anImage->mWidth - INSET - 1, y, static_cast<int>(REACH), anImage->mHeight), Rect(anImage->mWidth - INSET - 1, 0, 1, anImage->mHeight));
 		theApp->mGLInterface->PopTransform();
 	}
 	theApp->mGLInterface->PushTransform(aToWindow, false);
@@ -1003,9 +1003,9 @@ void DrawTreeScene(Graphics* g, LawnApp* theApp, const SexyMatrix3& theToWindow)
 	{
 		const int PERIOD = 36, OVERLAP = 12, JOIN = 8;
 		DrawExtension(g, theApp, aToWindow, GetExtension(theApp, anImage, false, PERIOD, OVERLAP, JOIN, 0, -1, true, INSET), false, aHill.mTransX + INSET,
-			aHill.mTransY, -FAR);
+			aHill.mTransY, -REACH);
 		DrawExtension(g, theApp, aToWindow, GetExtension(theApp, anImage, true, PERIOD, OVERLAP, JOIN, 0, -1, true, INSET), true,
-			aHill.mTransX + anImage->mWidth - INSET, aHill.mTransY, FAR);
+			aHill.mTransX + anImage->mWidth - INSET, aHill.mTransY, REACH);
 	}
 }
 
