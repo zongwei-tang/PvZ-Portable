@@ -107,6 +107,9 @@ show() {
 case "${1:-}" in
 	build) build ;;
 	show) shift; show "$@" ;;
-	run) shift; run "$@" ;;
+	run)
+		shift
+		# "run show ..." opens the window to play, like "show ..."
+		if [ "${1:-}" = show ]; then shift; show "$@"; else run "$@"; fi ;;
 	*) sed -n '2,17p' "$0"; exit 2 ;;
 esac
