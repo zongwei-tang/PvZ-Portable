@@ -9,12 +9,15 @@
 # repository or a release.
 #
 # Without --ipa it installs pvz-portable-ios-arm64.ipa of the latest release of the GitHub repository of the remote
-# "origin", so it also updates the app. A free team's signature lasts 7 days; installing again renews it, the saves stay.
+# "origin", so it also updates the app. A free team's signature lasts 7 days, that of a paid Apple Developer Program team
+# a year; installing again renews it, the saves stay. --team picks the team when the keychain has certificates of
+# several (a free and a paid one, say); the team used is kept and used again by later runs, --auto included. The app of
+# each team has its own bundle identifier, so after a change of team it is a second app, with saves of its own.
 # --auto is for ios/auto-renew.sh, which runs it every hour: it does nothing while the signature has more than 3 days
 # left, and otherwise installs over Wi-Fi when it finds the iPhone, saying so in a notification only when it is urgent.
 #
-# Once beforehand: Xcode > Settings > Accounts, add the Apple ID; select its "(Personal Team)", Manage Certificates,
-# + > Apple Development. On the iPhone: Settings > Privacy & Security > Developer Mode on. The first run is over the
+# Once beforehand: Xcode > Settings > Accounts, add the Apple ID; select its team ("(Personal Team)" for a free one),
+# Manage Certificates, + > Apple Development. On the iPhone: Settings > Privacy & Security > Developer Mode on. The first run is over the
 # cable, with the iPhone unlocked.
 #
 # How: a tiny app with the same bundle identifier is built with Xcode's automatic signing, which makes (or renews) the
@@ -106,6 +109,8 @@ if [ -z "$DEVICE" ]; then
 fi
 printf '%s\n' "$DEVICES" | cut -f1 | grep -qx "$DEVICE" || fail "the iPhone $DEVICE is not around (not on this Wi-Fi, or not paired)"
 echo "Device $DEVICE"
+
+[ -n "$TEAM" ] || TEAM="$(cat "$STATE/team" 2>/dev/null || true)"	# the team of the last install
 
 echo "=== Signing certificate ==="
 # Apple Development certificates whose private key is in the keychain, with the team (OU) of each
@@ -294,6 +299,7 @@ xcrun devicectl device install app --device "$DEVICE" "$APP" > "$WORK/install.lo
 	fail "could not install on the iPhone: is it unlocked, and on the same Wi-Fi or on the cable?"
 }
 echo "$DEVICE" > "$STATE/device"
+echo "$TEAM" > "$STATE/team"
 echo "$NEW_EXPIRES" > "$STATE/expires"
 echo "Installed; the signature lasts until $(date -r "$NEW_EXPIRES")"
 
