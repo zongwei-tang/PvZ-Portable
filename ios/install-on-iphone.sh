@@ -10,9 +10,10 @@
 #
 # Without --ipa it installs pvz-portable-ios-arm64.ipa of the latest release of the GitHub repository of the remote
 # "origin", so it also updates the app. A free team's signature lasts 7 days, that of a paid Apple Developer Program team
-# a year; installing again renews it, the saves stay. --team picks the team when the keychain has certificates of
-# several (a free and a paid one, say); the team used is kept and used again by later runs, --auto included. The app of
-# each team has its own bundle identifier, so after a change of team it is a second app, with saves of its own.
+# a year; installing again renews it, the saves stay. When the keychain has certificates of several teams (a free and a
+# paid one, say) it uses the one whose signature lasts longest, so the paid one, unless --team picks another; the team
+# used is kept for later runs, --auto included. The app of each team has its own bundle identifier, so after a change
+# of team it is a second app, with saves of its own.
 # --auto is for ios/auto-renew.sh, which runs it every hour: it does nothing while the signature has more than 3 days
 # left, and otherwise installs over Wi-Fi when it finds the iPhone, saying so in a notification only when it is urgent.
 #
@@ -110,80 +111,74 @@ fi
 printf '%s\n' "$DEVICES" | cut -f1 | grep -qx "$DEVICE" || fail "the iPhone $DEVICE is not around (not on this Wi-Fi, or not paired)"
 echo "Device $DEVICE"
 
-[ -n "$TEAM" ] || TEAM="$(cat "$STATE/team" 2>/dev/null || true)"	# the team of the last install
-
 echo "=== Signing certificate ==="
-# Apple Development certificates whose private key is in the keychain, with the team (OU) of each
+# The teams that have an Apple Development certificate whose private key is in the keychain (the team is its OU)
 security find-identity -v -p codesigning > "$WORK/identities.txt"
 security find-certificate -a -Z -p -c "Apple Development" > "$WORK/certificates.txt" 2>/dev/null || true
-CERT_INFO="$(python3 -I - "$WORK/identities.txt" "$WORK/certificates.txt" "$TEAM" <<'PY'
+TEAMS="$(python3 -I - "$WORK/identities.txt" "$WORK/certificates.txt" <<'PY'
 import re, subprocess, sys
-identities, certificates, wanted = sys.argv[1], sys.argv[2], sys.argv[3]
+identities, certificates = sys.argv[1], sys.argv[2]
 valid = set(re.findall(r'\b([0-9A-F]{40})\b\s+"Apple Development', open(identities).read()))
 text = open(certificates).read()
-found = []
+teams = set()
 for sha1, pem in re.findall(r'SHA-1 hash: ([0-9A-F]{40}).*?(-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----)', text, re.S):
     if sha1 not in valid:
         continue
     subject = subprocess.run(["openssl", "x509", "-noout", "-subject", "-nameopt", "RFC2253"], input=pem,
                              capture_output=True, text=True).stdout
     team = re.search(r'OU=([A-Z0-9]{10})', subject)
-    if team and (not wanted or team.group(1) == wanted):
-        found.append((sha1, team.group(1)))
-teams = sorted({t for _, t in found})
-if len(teams) != 1:
-    print("NONE" if not teams else "MANY " + " ".join(teams))
-else:
-    print(found[0][0], teams[0])
+    if team:
+        teams.add(team.group(1))
+print(" ".join(sorted(teams)))
 PY
 )"
-case "$CERT_INFO" in
-	NONE) fail "no Apple Development certificate in the keychain${TEAM:+ for team $TEAM}. In Xcode: Settings > Accounts > your Apple ID > (Personal Team) > Manage Certificates > + > Apple Development" ;;
-	MANY*) fail "certificates of several teams (${CERT_INFO#MANY }): pick one with --team TEAMID" ;;
-esac
-TEAM="${CERT_INFO#* }"
-echo "Team $TEAM"
+case " $TEAMS " in *" ${TEAM:-$TEAMS} "*) ;; *) TEAMS="" ;; esac
+[ -n "$TEAMS" ] || fail "no Apple Development certificate in the keychain${TEAM:+ for team $TEAM}. In Xcode: Settings > Accounts > your Apple ID > its team > Manage Certificates > + > Apple Development"
 
-# The identifier of this team's copy: an identifier belongs to one team, so the team ID makes it free to use
-BUNDLE_ID="io.github.wszqkzqk.pvz-portable.$TEAM"
-echo "Bundle identifier $BUNDLE_ID"
-
-echo "=== Provisioning profile ==="
-mkdir -p "$WORK/profile"
-# never started: it is only built, so that Xcode signs it, and the game replaces it on the device
-echo 'int main(void) { return 0; }' > "$WORK/profile/main.c"
-cat > "$WORK/profile/CMakeLists.txt" <<CMAKE
+# A provisioning profile of one team for this device, made by Xcode's automatic signing of a tiny app with the same
+# bundle identifier, in $WORK/profile-TEAM. Prints the certificate to sign with and when the profile ends.
+make_profile() {
+	local aTeam="$1" aDir="$WORK/profile-$1" aBundle="io.github.wszqkzqk.pvz-portable.$1"
+	mkdir -p "$aDir/src"
+	# never started: it is only built, so that Xcode signs it, and the game replaces it on the device
+	echo 'int main(void) { return 0; }' > "$aDir/src/main.c"
+	cat > "$aDir/src/CMakeLists.txt" <<CMAKE
 cmake_minimum_required(VERSION 3.21)
 project(PvzpSigning LANGUAGES C)
 set(CMAKE_XCODE_GENERATE_SCHEME ON)
 add_executable(PvzpSigning MACOSX_BUNDLE main.c)
 set_target_properties(PvzpSigning PROPERTIES
-	MACOSX_BUNDLE_GUI_IDENTIFIER "$BUNDLE_ID"
-	XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "$BUNDLE_ID"
-	XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "$TEAM"
+	MACOSX_BUNDLE_GUI_IDENTIFIER "$aBundle"
+	XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "$aBundle"
+	XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "$aTeam"
 	XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Automatic"
 	XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "Apple Development"
 	XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "16.4"
 	XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
 )
 CMAKE
-cmake -S "$WORK/profile" -B "$WORK/profile/build" -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 \
-	-DCMAKE_OSX_DEPLOYMENT_TARGET=16.4 > "$WORK/profile-cmake.log" 2>&1 || { tail -20 "$WORK/profile-cmake.log"; fail "could not make the signing project"; }
-xcodebuild -project "$WORK/profile/build/PvzpSigning.xcodeproj" -scheme PvzpSigning -configuration Release \
-	-destination "platform=iOS,id=$DEVICE" -allowProvisioningUpdates -allowProvisioningDeviceRegistration \
-	build > "$WORK/profile-build.log" 2>&1 || {
-		grep -E "error:|No Account|No profiles|not registered|Developer Mode" "$WORK/profile-build.log" | head -15
-		fail "Xcode could not sign for this device (full log: $WORK/profile-build.log). Is the Apple ID added in Xcode > Settings > Accounts?"
-	}
-SIGNER_APP="$(find "$WORK/profile/build" -name "PvzpSigning.app" -path "*iphoneos*" -type d | head -n 1)"
-[ -n "$SIGNER_APP" ] && [ -f "$SIGNER_APP/embedded.mobileprovision" ] || fail "Xcode made no provisioning profile (see $WORK/profile-build.log)"
-cp "$SIGNER_APP/embedded.mobileprovision" "$WORK/embedded.mobileprovision"
-codesign -d --entitlements - --xml "$SIGNER_APP" > "$WORK/entitlements.plist" 2>/dev/null
-plutil -lint "$WORK/entitlements.plist" >/dev/null || fail "could not read the entitlements Xcode signed with"
-
-# the certificate of the profile, which is the one to sign the game with, and when the profile ends
-security cms -D -i "$WORK/embedded.mobileprovision" > "$WORK/profile.plist"
-PROFILE_INFO="$(python3 -I - "$WORK/profile.plist" "$WORK/identities.txt" <<'PY'
+	cmake -S "$aDir/src" -B "$aDir/build" -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 \
+		-DCMAKE_OSX_DEPLOYMENT_TARGET=16.4 > "$aDir/cmake.log" 2>&1 \
+		|| { tail -20 "$aDir/cmake.log" >&2; echo "Team $aTeam: could not make the signing project" >&2; return 1; }
+	xcodebuild -project "$aDir/build/PvzpSigning.xcodeproj" -scheme PvzpSigning -configuration Release \
+		-destination "platform=iOS,id=$DEVICE" -allowProvisioningUpdates -allowProvisioningDeviceRegistration \
+		build > "$aDir/build.log" 2>&1 || {
+			grep -E "error:|No Account|No profiles|not registered|Developer Mode" "$aDir/build.log" | head -15 >&2
+			echo "Team $aTeam: Xcode could not sign for this device (full log: $aDir/build.log). Is its Apple ID added in Xcode > Settings > Accounts?" >&2
+			return 1
+		}
+	local aSigner
+	aSigner="$(find "$aDir/build" -name "PvzpSigning.app" -path "*iphoneos*" -type d | head -n 1)"
+	[ -n "$aSigner" ] && [ -f "$aSigner/embedded.mobileprovision" ] \
+		|| { echo "Team $aTeam: Xcode made no provisioning profile (see $aDir/build.log)" >&2; return 1; }
+	cp "$aSigner/embedded.mobileprovision" "$aDir/embedded.mobileprovision"
+	codesign -d --entitlements - --xml "$aSigner" > "$aDir/entitlements.plist" 2>/dev/null
+	plutil -lint "$aDir/entitlements.plist" >/dev/null \
+		|| { echo "Team $aTeam: could not read the entitlements Xcode signed with" >&2; return 1; }
+	# the certificate of the profile, which is the one to sign the game with, and when the profile ends
+	security cms -D -i "$aDir/embedded.mobileprovision" > "$aDir/profile.plist"
+	local anInfo
+	anInfo="$(python3 -I - "$aDir/profile.plist" "$WORK/identities.txt" <<'PY'
 import hashlib, plistlib, re, sys
 profile = plistlib.load(open(sys.argv[1], "rb"))
 valid = set(re.findall(r'\b([0-9A-F]{40})\b', open(sys.argv[2]).read()))
@@ -195,9 +190,43 @@ for cert in profile.get("DeveloperCertificates", []):
         break
 PY
 )"
-[ -n "$PROFILE_INFO" ] || fail "the profile names no certificate whose private key is in this keychain"
-SIGN_HASH="${PROFILE_INFO% *}"
-NEW_EXPIRES="${PROFILE_INFO#* }"
+	[ -n "$anInfo" ] || { echo "Team $aTeam: the profile names no certificate whose private key is in this keychain" >&2; return 1; }
+	echo "$anInfo"
+}
+
+echo "=== Team ==="
+# Given with --team, or the only one; with several (a free and a paid one, say) each gets a profile and the one whose
+# profile lasts longest is used: a paid team's lasts a year, a free one's 7 days. That team is kept, and used again
+# as long as the same teams have certificates.
+KEPT_TEAM="$(cat "$STATE/team" 2>/dev/null || true)"
+KEPT_TEAMS="$(cat "$STATE/teams" 2>/dev/null || true)"
+if [ -n "$TEAM" ] || [ "${TEAMS// /}" = "$TEAMS" ]; then
+	CANDIDATES="${TEAM:-$TEAMS}"
+elif [ -n "$KEPT_TEAM" ] && [ "$KEPT_TEAMS" = "$TEAMS" ]; then
+	CANDIDATES="$KEPT_TEAM"
+else
+	CANDIDATES="$TEAMS"
+	echo "Certificates of several teams ($TEAMS): the one whose signature lasts longest is used"
+fi
+TEAM=""
+NEW_EXPIRES=0
+for aCandidate in $CANDIDATES; do
+	echo "Profile of team $aCandidate"
+	anInfo="$(make_profile "$aCandidate")" || continue
+	anEnd="${anInfo#* }"
+	echo "  valid until $(date -r "$anEnd")"
+	if [ "$anEnd" -gt "$NEW_EXPIRES" ]; then
+		TEAM="$aCandidate"
+		SIGN_HASH="${anInfo% *}"
+		NEW_EXPIRES="$anEnd"
+	fi
+done
+[ -n "$TEAM" ] || fail "no team could sign for this device (see the messages above)"
+cp "$WORK/profile-$TEAM/embedded.mobileprovision" "$WORK/embedded.mobileprovision"
+cp "$WORK/profile-$TEAM/entitlements.plist" "$WORK/entitlements.plist"
+# The identifier of this team's copy: an identifier belongs to one team, so the team ID makes it free to use
+BUNDLE_ID="io.github.wszqkzqk.pvz-portable.$TEAM"
+echo "Team $TEAM, bundle identifier $BUNDLE_ID"
 echo "Profile valid until $(date -r "$NEW_EXPIRES")"
 
 echo "=== Game ==="
@@ -300,6 +329,7 @@ xcrun devicectl device install app --device "$DEVICE" "$APP" > "$WORK/install.lo
 }
 echo "$DEVICE" > "$STATE/device"
 echo "$TEAM" > "$STATE/team"
+echo "$TEAMS" > "$STATE/teams"
 echo "$NEW_EXPIRES" > "$STATE/expires"
 echo "Installed; the signature lasts until $(date -r "$NEW_EXPIRES")"
 
