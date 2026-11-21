@@ -1368,9 +1368,9 @@ void LawnApp::EnsureTrainerPanel()
 }
 
 // A level in the phone layout: on phones, with the option on, while a normal level or one with a conveyor belt is
-// played. Levels with their own strip along the top (slot machine, Zen Garden, ...), the seed chooser, cutscenes, dialogs
-// and the menus show the 800x600 screen framed (PhoneLayout::ComputeFramed). PVZP_PHONE_LAYOUT=1 turns both on for a
-// wide window elsewhere too, to try them.
+// played, also with a dialog over it (the menu, ...). Levels with their own strip along the top (slot machine, Zen
+// Garden, ...), the seed chooser, cutscenes, the almanac and the menus show the 800x600 screen framed
+// (PhoneLayout::ComputeFramed). PVZP_PHONE_LAYOUT=1 turns both on for a wide window elsewhere too, to try them.
 bool LawnApp::PhoneScreen()
 {
 #if defined(__IPHONEOS__) || (defined(__ANDROID__) && !defined(__TERMUX__))
@@ -1389,14 +1389,14 @@ bool LawnApp::PhoneLayoutApplies()
 		return (mPhoneLayoutOff = "no board", false);
 	if (mGameScene != GameScenes::SCENE_PLAYING)
 		return (mPhoneLayoutOff = "not playing", false);
-	if (GetDialogCount() > 0)
+	if (GetDialog(Dialogs::DIALOG_ALMANAC) || GetDialog(Dialogs::DIALOG_STORE))	// over all of the screen (the others are boxes over the lawn)
 		return (mPhoneLayoutOff = "dialog", false);
 	if (mTrainerPanel && mTrainerPanel->mOpen)
 		return (mPhoneLayoutOff = "trainer", false);
 	if (IsSlotMachineLevel() || IsChallengeWithoutSeedBank() || IsScaryPotterLevel() || IsWhackAZombieLevel())
 		return (mPhoneLayoutOff = "level of its own", false);
 	if (mGameMode == GameMode::GAMEMODE_CHALLENGE_ZEN_GARDEN || mGameMode == GameMode::GAMEMODE_TREE_OF_WISDOM ||
-		mGameMode == GameMode::GAMEMODE_CHALLENGE_LAST_STAND || mGameMode == GameMode::GAMEMODE_CHALLENGE_BEGHOULED ||
+		mGameMode == GameMode::GAMEMODE_CHALLENGE_BEGHOULED ||
 		mGameMode == GameMode::GAMEMODE_CHALLENGE_BEGHOULED_TWIST)
 		return (mPhoneLayoutOff = "level of its own", false);
 	// the bank where a level keeps it, and the board not panned (as in cutscenes)
@@ -1512,20 +1512,6 @@ void LawnApp::UpdatePhoneLayout()
 	auto BackdropPiece = [](const PhoneLayout::Tile& theTile, MemoryImage* theImage, const PhoneLayout::Box& theBackdrop)
 	{
 		double aScaleX = theTile.mDest.mWidth / theTile.mSource.mWidth, aScaleY = theTile.mDest.mHeight / theTile.mSource.mHeight;
-		if (theTile.mMirrored)
-		{
-			// mirrored at an end of the image: whole pixels from that end, the window rectangle grown away from the mirror
-			double aPixels = std::ceil(theTile.mSource.mWidth - 1e-6);
-			bool aLeftEnd = theTile.mSource.mX - theBackdrop.mX < 0.5;
-			double aSourceX = aLeftEnd ? 0 : theBackdrop.mWidth - aPixels;
-			double aWidth = aPixels * aScaleX;
-			double aDestX = aLeftEnd ? theTile.mDest.Right() - aWidth : theTile.mDest.mX;
-			PresentationTile aPiece{ FRect(aSourceX, std::floor(theTile.mSource.mY - theBackdrop.mY), aPixels, std::ceil(theTile.mSource.mHeight)),
-				FRect(aDestX, theTile.mDest.mY, aWidth, std::ceil(theTile.mSource.mHeight) * aScaleY) };
-			aPiece.mImage = theImage;
-			aPiece.mMirror = true;
-			return aPiece;
-		}
 		double aLeft = std::floor(theTile.mSource.mX - theBackdrop.mX), aTop = std::floor(theTile.mSource.mY - theBackdrop.mY);
 		double aRight = std::ceil(theTile.mSource.Right() - theBackdrop.mX), aBottom = std::ceil(theTile.mSource.Bottom() - theBackdrop.mY);
 		PresentationTile aPiece{ FRect(aLeft, aTop, aRight - aLeft, aBottom - aTop),
@@ -1627,7 +1613,6 @@ void LawnApp::UpdatePhoneLayout()
 		bool aMenu = mBoard == nullptr && mGameSelector && mGameSelector->mVisible && !mTitleScreen;
 		anInput.mSurround = mCreditScreen ? PhoneLayout::SURROUND_CREDITS : aStore ? PhoneLayout::SURROUND_STORE : aPage ? PhoneLayout::SURROUND_PAGE : aNote ? PhoneLayout::SURROUND_NOTE :
 			aGarden && !aPage ? aBoardSurround : aMenu ? PhoneLayout::SURROUND_MENU : PhoneLayout::SURROUND_NONE;
-		anInput.mSurroundAtRight = anInput.mSurround == PhoneLayout::SURROUND_STORE || anInput.mSurround == PhoneLayout::SURROUND_MENU;
 		anInput.mTitle = mTitleScreen && mTitleScreen->ShowsTitle();
 		MemoryImage* aBackdrop = aStore ? nullptr : PhoneBackdrop();
 		if (aBackdrop != nullptr)
@@ -1637,6 +1622,13 @@ void LawnApp::UpdatePhoneLayout()
 		}
 		anInput.mDarkWeather = mBoard != nullptr && IsStormyNightLevel();
 		anInput.mBeyond = mBoard != nullptr && !aPage;
+		if (mBoard != nullptr && mBoard->mSeedBank)
+		{
+			// the board the cards will lie on in the level, as wide as they need
+			bool aConveyor = mBoard->HasConveyorBeltSeedBank();
+			anInput.mCardSlots = aConveyor ? PhoneLayout::CONVEYOR_SLOTS : mBoard->mSeedBank->mNumPackets > 0 ? mBoard->mSeedBank->mNumPackets : 6;
+			anInput.mCardPad = aConveyor ? PhoneLayout::CONVEYOR_PAD : 0;
+		}
 		for (const PhoneLayout::Tile& aTile : PhoneLayout::ComputeFramed(anInput))
 		{
 			if (aTile.mKind == PhoneLayout::Kind::Backdrop)

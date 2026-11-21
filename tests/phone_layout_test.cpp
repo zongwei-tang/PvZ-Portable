@@ -99,13 +99,13 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 	const Box& aSafe = theInput.mSafeArea;
 	Box aScreen{ 0, 0, theInput.mScreenWidth, theInput.mScreenHeight };
 
-	// the order: the backdrop, the game's screen in one or two pieces, then the controls
-	size_t aFirstLawn = 0;
-	while (aFirstLawn < aTiles.size() && aTiles[aFirstLawn].mKind == Kind::Backdrop)
-		aFirstLawn++;
-	Check(theInput.mBackdrop.Empty() ? aFirstLawn == 0 : (aFirstLawn == 1 || aFirstLawn == 2), theName + ": a backdrop exactly when the level has one");
+	// the order: the backdrop (and its edge going on past the image's end), the game's screen, then the controls
+	size_t aBackdrops = 0, aFirstLawn = 0;
+	while (aFirstLawn < aTiles.size() && (aTiles[aFirstLawn].mKind == Kind::Backdrop || aTiles[aFirstLawn].mKind == Kind::Edge))
+		aBackdrops += aTiles[aFirstLawn++].mKind == Kind::Backdrop;
+	Check(theInput.mBackdrop.Empty() ? aFirstLawn == 0 : (aBackdrops == 1 || aBackdrops == 2), theName + ": a backdrop exactly when the level has one");
 	for (size_t i = aFirstLawn; i < aTiles.size(); i++)
-		Check(aTiles[i].mKind != Kind::Backdrop, theName + ": the backdrop comes first only");
+		Check(aTiles[i].mKind != Kind::Backdrop && aTiles[i].mKind != Kind::Edge, theName + ": the backdrop comes first only");
 	Check(aFirstLawn < aTiles.size() && aTiles[aFirstLawn].mKind == Kind::Screen && Same(aTiles[aFirstLawn].mSource, theInput.mLawn),
 		theName + ": the game's screen, whole, after the backdrop");
 	size_t aFirstControl = aFirstLawn + 1;
@@ -121,34 +121,67 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 		std::string aWhich = theName + ": tile " + std::to_string(i);
 		double aScaleX = aTile.mDest.mWidth / aTile.mSource.mWidth;
 		double aScaleY = aTile.mDest.mHeight / aTile.mSource.mHeight;
-		if (aTile.mKind == Kind::Backdrop && aTile.mMirrored)
-		{
-			// mirrored past an end of the image: its end at the mirror, as high as the lawn
-			Check(std::abs(aScaleY - aLawnScale) < 1e-9 && std::abs(aScaleX - aLawnScale) < 1e-9, aWhich + " (the mirrored backdrop) has the lawn's scale");
-			Check(std::abs(aTile.mSource.mX - theInput.mBackdrop.mX) < EPSILON || std::abs(aTile.mSource.Right() - theInput.mBackdrop.Right()) < EPSILON,
-				aWhich + " (the mirrored backdrop) is at an end of the image");
-			continue;
-		}
 		if (aTile.mKind == Kind::Backdrop)
 		{
-			// in line with the lawn: the same scale and place, but for its part left of the lawn, which is stretched
-			// across to the safe area
-			Check(std::abs(aScaleY - aLawnScale) < 1e-9, aWhich + " (the backdrop) is as high as the lawn");
+			// in line with the lawn: the same scale and place, left or right of it
+			Check(std::abs(aScaleY - aLawnScale) < 1e-9 && std::abs(aScaleX - aLawnScale) < 1e-9, aWhich + " (the backdrop) has the lawn's scale");
 			Check(std::abs(aTile.mDest.mY - (aLawnOffsetY + aTile.mSource.mY * aLawnScale)) < EPSILON, aWhich + " (the backdrop) lines up with the lawn");
-			if (std::abs(aTile.mSource.Right() - theInput.mLawn.mX) < EPSILON)
-			{
-				Check(std::abs(aTile.mSource.Right() - theInput.mLawn.mX) < EPSILON, aWhich + " (the stretched backdrop) ends where the lawn begins");
-				Check(std::abs(aTile.mDest.Right() - (aLawnOffsetX + theInput.mLawn.mX * aLawnScale)) < EPSILON, aWhich + " (the stretched backdrop) meets the lawn");
-				Check(std::abs(aTile.mDest.mX - std::max(0.0, aTile.mDest.Right() - 2 * aTile.mSource.mWidth * aLawnScale)) < EPSILON,
-					aWhich + " (the stretched backdrop) reaches the window's left edge, or is twice as wide");
-				Check(aScaleX >= aLawnScale - 1e-9 && aScaleX <= aLawnScale * 2 + 1e-9, aWhich + " (the stretched backdrop) is stretched twice at the most");
-			}
+			Check(std::abs(aTile.mDest.mX - (aLawnOffsetX + aTile.mSource.mX * aLawnScale)) < EPSILON, aWhich + " (the backdrop) lines up with the lawn across");
+			Check(Inside(aTile.mSource, theInput.mBackdrop), aWhich + " (the backdrop) is of the image");
+			Check(std::abs(aTile.mSource.Right() - theInput.mLawn.mX) < EPSILON || std::abs(aTile.mSource.mX - theInput.mLawn.Right()) < EPSILON,
+				aWhich + " (the backdrop) is left or right of the lawn, next to it");
+			continue;
+		}
+		if (aTile.mKind == Kind::Edge)
+		{
+			// past an end of the image, out to the window's edge, as high as the image
+			bool aLeftEnd = aTile.mDest.mX < EPSILON;
+			double anImageEnd = aLawnOffsetX + (aLeftEnd ? theInput.mBackdrop.mX : theInput.mBackdrop.Right()) * aLawnScale;
+			Check(aLeftEnd ? std::abs(aTile.mDest.Right() - anImageEnd) < EPSILON : std::abs(aTile.mDest.mX - anImageEnd) < EPSILON &&
+				std::abs(aTile.mDest.Right() - theInput.mScreenWidth) < EPSILON, aWhich + " (the backdrop's edge) reaches from the image's end to the window's");
+			Check(std::abs(aTile.mDest.mHeight - theInput.mBackdrop.mHeight * aLawnScale) < EPSILON, aWhich + " (the backdrop's edge) is as high as the image");
+			continue;
+		}
+		if (aTile.mKind == Kind::Board && aTile.mIndex == 1)
+		{
+			// right of a picture of the level's own (no backdrop): from the game's screen's right edge to the window's
+			Check(theInput.mBackdrop.Empty(), aWhich + " (a board right of the screen) only beside a picture of the level's own");
+			Check(std::abs(aTile.mDest.mX - (aLawnOffsetX + theInput.mLawn.Right() * aLawnScale)) < EPSILON &&
+				std::abs(aTile.mDest.Right() - theInput.mScreenWidth) < EPSILON && std::abs(aTile.mDest.mHeight - theInput.mScreenHeight) < EPSILON,
+				aWhich + " (a board right of the screen) reaches from it to the window's right edge, all its height");
+			continue;
+		}
+		if (aTile.mKind == Kind::Board && aTile.mIndex == 2)
+		{
+			// black under the notch, left of the board
+			Check(std::abs(aTile.mDest.mX) < EPSILON && aTile.mDest.Right() <= aSafe.mX + EPSILON, aWhich + " (black) is under the notch only");
+			continue;
+		}
+		if (aTile.mKind == Kind::Board)
+		{
+			// from the safe area's left edge, all its height, just past the cards (and past where the backdrop's image
+			// ends), left of the game's screen; under the cards, which lie on it; a tap on it beside them goes nowhere
+			Check(std::abs(aTile.mDest.mX - aSafe.mX) < EPSILON && std::abs(aTile.mDest.mY) < EPSILON && std::abs(aTile.mDest.mHeight - theInput.mScreenHeight) < EPSILON,
+				aWhich + " (the cards' board) reaches from the safe area's left edge, all the window's height");
+			if (!theInput.mBackdrop.Empty())
+				Check(aTile.mDest.Right() >= aLawnOffsetX + theInput.mBackdrop.mX * aLawnScale - EPSILON, aWhich + " (the cards' board) covers where the backdrop's image ends");
 			else
-			{
-				Check(std::abs(aTile.mSource.mX - theInput.mLawn.Right()) < EPSILON, aWhich + " (the backdrop) is right of the lawn");
-				Check(std::abs(aScaleX - aLawnScale) < 1e-9, aWhich + " (the backdrop) has the scale of the lawn");
-				Check(std::abs(aTile.mDest.mX - (aLawnOffsetX + aTile.mSource.mX * aLawnScale)) < EPSILON, aWhich + " (the backdrop) lines up with the lawn across");
-			}
+				Check(std::abs(aTile.mDest.Right() - (aLawnOffsetX + theInput.mLawn.mX * aLawnScale)) < EPSILON, aWhich + " (the cards' board) reaches the game's screen (no picture of its own beside it)");
+			Check(aTile.mDest.Right() <= aLawnOffsetX + theInput.mLawn.mX * aLawnScale + EPSILON, aWhich + " (the cards' board) is left of the game's screen");
+			double aCardsRight = aTile.mDest.mX;
+			for (size_t j = i + 1; j < aTiles.size(); j++)
+				if (aTiles[j].mKind == Kind::Card || aTiles[j].mKind == Kind::Conveyor)
+				{
+					Check(aTiles[j].mDest.mX >= aTile.mDest.mX - EPSILON && aTiles[j].mDest.Right() <= aTile.mDest.Right() + EPSILON, aWhich + " (the cards' board) is under the cards");
+					aCardsRight = std::max(aCardsRight, aTiles[j].mDest.Right());
+				}
+			if (!theInput.mBackdrop.Empty() && aCardsRight > aTile.mDest.mX)
+				Check(aTile.mDest.Right() <= std::max(aCardsRight + EDGE_MARGIN, aLawnOffsetX + theInput.mBackdrop.mX * aLawnScale) + EPSILON,
+					aWhich + " (the cards' board) is no wider than the cards need, or the backdrop's image leaves");
+			for (size_t j = 0; j < i; j++)
+				Check(aTiles[j].mKind != Kind::Card && aTiles[j].mKind != Kind::Conveyor, aWhich + " (the cards' board) is drawn before the cards");
+			double x = 0, y = 0;
+			Check(!WindowToGame(aTiles, aTile.mDest.Right() - 1, aTile.mDest.mHeight - 1, x, y), aWhich + ": a tap on the cards' board beside them goes nowhere");
 			continue;
 		}
 		if (aTile.mKind == Kind::Screen)
@@ -225,6 +258,18 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 		}
 	}
 
+	int aBoards = 0, aRightBoards = 0;
+	for (const Tile& t : aTiles)
+	{
+		aBoards += t.mKind == Kind::Board && t.mIndex == 0;
+		aRightBoards += t.mKind == Kind::Board && t.mIndex == 1;
+	}
+	Check(aBoards == 1, theName + ": the board the cards lie on");
+	bool aRoomRight = aLawnOffsetX + theInput.mLawn.Right() * aLawnScale < theInput.mScreenWidth - 0.5;
+	Check(aRightBoards == (theInput.mBackdrop.Empty() && aRoomRight ? 1 : 0), theName + ": a board right of the screen exactly beside a picture of the level's own");
+	for (const Tile& t : aTiles)
+		Check(t.mKind != Kind::Surround || !theInput.mBackdrop.Empty(), theName + ": nothing around a picture of the level's own but the boards");
+
 	// the controls
 	auto aFindKind = [&](Kind theKind) -> const Tile*
 	{
@@ -278,7 +323,11 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 	double aBarRight = aColumnRight;
 	if (aSun)
 	{
-		Check(aSun->mDest.mX > aColumnRight && aSun->mDest.mX < aColumnRight + 2 * GAP, theName + ": the sun counter is right beside the cards");
+		double aBoardEdge = aColumnRight;
+		for (const Tile& t : aTiles)
+			if (t.mKind == Kind::Board && t.mIndex == 0 && !theInput.mBackdrop.Empty())
+				aBoardEdge = std::max(aBoardEdge, t.mDest.Right());
+		Check(aSun->mDest.mX > aBoardEdge && aSun->mDest.mX < aBoardEdge + 2 * GAP, theName + ": the sun counter is right beside the cards and their board");
 		Check(std::abs(aSun->mDest.mY - (aSafe.mY + EDGE_MARGIN)) < EPSILON, theName + ": the sun counter is at the top");
 		Check(aSun->mDest.mWidth > aSun->mDest.mHeight * 2, theName + ": the sun counter is a wide bar");
 		aBarRight = aSun->mDest.Right();
@@ -446,10 +495,10 @@ int main()
 	for (auto [aName, w, h, aSafe] : { std::tuple{ "iPhone 15", 852.0, 393.0, aPhoneSafe }, std::tuple{ "iPhone SE", 667.0, 375.0, Box{ 0, 0, 667, 375 } },
 		std::tuple{ "iPhone 15 Pro Max", 932.0, 430.0, Box{ 59, 0, 932 - 118, 430 - 21 } }, std::tuple{ "iPhone 15, island on the left only", 852.0, 393.0, Box{ 59, 0, 793, 372 } } })
 	{
-		for (int aCase = 0; aCase < 7; aCase++)
+		for (int aCase = 0; aCase < 8; aCase++)
 		{
 			static const char* const CASES[] = { "", ", main menu", ", lawn behind", ", lawn panned to the street", ", lawn panned to the house", ", a page",
-				", the store" };
+				", the store", ", a garden" };
 			std::string aWhich = std::string(aName) + ", framed" + CASES[aCase];
 			std::printf("%s\n", aWhich.c_str());
 			Input anInput;
@@ -457,8 +506,7 @@ int main()
 			anInput.mScreenHeight = h;
 			anInput.mSafeArea = aSafe;
 			anInput.mLawn = Box{ 0, 0, 800, 600 };
-			anInput.mSurround = aCase == 1 ? SURROUND_MENU : aCase == 5 ? SURROUND_PAGE : aCase == 6 ? SURROUND_STORE : SURROUND_NONE;
-			anInput.mSurroundAtRight = aCase == 1 || aCase == 6;
+			anInput.mSurround = aCase == 1 ? SURROUND_MENU : aCase == 5 ? SURROUND_PAGE : aCase == 6 ? SURROUND_STORE : aCase == 7 ? SURROUND_GARDEN : SURROUND_NONE;
 			if (aCase >= 2 && aCase <= 4)
 				anInput.mBackdrop = Box{ aCase == 3 ? -600.0 : aCase == 4 ? 0.0 : -220.0, 0, 1400, 600 };
 			std::vector<Tile> aFramed = ComputeFramed(anInput);
@@ -480,17 +528,11 @@ int main()
 			if (!aScreenTile)
 				continue;
 			Check(std::abs(aScreenTile->mDest.mHeight - h) < EPSILON, aWhich + ": the game's screen is as tall as the window");
-			if (aCase != 1 && aCase != 4 && aCase != 6)
+			if (aCase != 3 && aCase != 4)
 				Check(aScreenTile->mDest.mX >= aSafe.mX - EPSILON && aScreenTile->mDest.Right() <= aSafe.Right() + EPSILON, aWhich + ": the game's screen is clear of the notch");
 			Check(aScenes == (aCase == 1 || aCase == 5 ? 1 : 0), aWhich + ": the main menu's scenery exactly in the main menu and around pages");
 			Check(aStores == (aCase == 6 ? 1 : 0), aWhich + ": the store's scenery exactly in the store");
-			if (aCase == 1 || aCase == 6)
-			{
-				// against the window's right edge: what the picture cuts off at its right edge the phone's edge cuts off
-				Check(std::abs(aScreenTile->mDest.Right() - w) < EPSILON, aWhich + ": the game's screen is against the window's right edge");
-				Check(aScreenTile->mDest.mX >= aSafe.mX - EPSILON, aWhich + ": the game's screen is right of the notch");
-			}
-			else if (aCase >= 2 && aCase <= 4)
+			if (aCase >= 2 && aCase <= 4)
 			{
 				// as in the level layout, so that nothing moves when a dialog opens in a level
 				std::vector<Tile> aLevel = Compute(GameInput(w, h, aSafe, 6, true));
@@ -498,30 +540,55 @@ int main()
 				for (const Tile& t : aLevel)
 					if (t.mKind == Kind::Screen && Same(t.mSource, Box{ 0, 0, 800, 600 }))
 						aLevelScreen = &t;
-				if (aCase != 4)
+				if (aCase == 2)
+				{
 					Check(aLevelScreen && Same(aLevelScreen->mDest, aScreenTile->mDest), aWhich + ": the game's screen is where the level layout has it");
+					// the cards' board where a level with six cards has it, so that it stays when the level begins
+					const Tile* aBoard = nullptr;
+					const Tile* aLevelBoard = nullptr;
+					for (const Tile& t : aFramed)
+						if (t.mKind == Kind::Board && t.mIndex == 0)
+							aBoard = &t;
+					for (const Tile& t : aLevel)
+						if (t.mKind == Kind::Board && t.mIndex == 0)
+							aLevelBoard = &t;
+					Check((aBoard == nullptr) == (aLevelBoard == nullptr) && (!aBoard || Same(aBoard->mDest, aLevelBoard->mDest)),
+						aWhich + ": the cards' board is where the level layout has it");
+				}
+				else if (aCase == 3)
+				{
+					// the image ending at the screen's right edge: the screen further right, to the window's edge at the most,
+					// the image with it
+					Check(aLevelScreen && std::abs(aScreenTile->mDest.Right() - w) < EPSILON,
+						aWhich + ": the game's screen is against the window's right edge (the board panned to the street, the image ending there)");
+				}
 				else
-					Check(aLevelScreen && aScreenTile->mDest.mX <= aLevelScreen->mDest.mX + EPSILON && aScreenTile->mDest.mX >= -EPSILON,
-						aWhich + ": the game's screen is left of where the level layout has it, on the window (the board panned to the house)");
+				{
+					// the house no narrower beside it than in a level
+					Check(aLevelScreen && std::abs(aScreenTile->mDest.mX - std::max(0.0, aLevelScreen->mDest.mX - HOUSE_WIDTH * aScreenTile->mDest.mWidth / 800)) < EPSILON,
+						aWhich + ": the game's screen is left of where the level layout has it, as far as the house is wide (the board panned to the house)");
+				}
 				for (const Tile& t : aFramed)
 				{
+					if (t.mKind == Kind::Board)
+						Check(t.mDest.mX < aSafe.mX + EPSILON && t.mDest.Right() <= aScreenTile->mDest.mX + EPSILON, aWhich + ": the cards' board is beside the game's screen, from the safe area's edge");
 					if (t.mKind != Kind::Backdrop)
 						continue;
 					Check(Inside(t.mSource, anInput.mBackdrop), aWhich + ": a piece of the backdrop is of the image");
 					Check(!Overlap(t.mDest, aScreenTile->mDest), aWhich + ": the backdrop is beside the game's screen");
 					double aScaleX = t.mDest.mWidth / t.mSource.mWidth;
 					double aScale = aScreenTile->mDest.mWidth / 800;
-					Check(aScaleX >= aScale - 1e-9 && aScaleX <= 2 * aScale + 1e-9, aWhich + ": the backdrop is stretched twice as wide at the most");
+					Check(std::abs(aScaleX - aScale) < 1e-9, aWhich + ": the backdrop has the game's screen's scale");
+					Check(std::abs(t.mDest.mX - (aScreenTile->mDest.mX + t.mSource.mX * aScale)) < EPSILON, aWhich + ": the backdrop lines up with the game's screen across");
 					Check(std::abs(t.mDest.mY - (aScreenTile->mDest.mY + (t.mSource.mY - 0) * aScale)) < EPSILON, aWhich + ": the backdrop lines up with the game's screen");
 				}
-				if (aCase == 2)
 				{
-					// the house and the street fill the window right of the safe area's left edge
-					for (double x = std::max(0.0, aSafe.mX) + 0.5; x < w; x += 3)
+					// the house and the street (and past the image's ends its edge going on) fill the window
+					for (double x = 0.5; x < w; x += 3)
 					{
 						bool aCovered = aScreenTile->mDest.Contains(x, h / 2);
 						for (const Tile& t : aFramed)
-							aCovered = aCovered || (t.mKind == Kind::Backdrop && t.mDest.Contains(x, h / 2));
+							aCovered = aCovered || ((t.mKind == Kind::Backdrop || t.mKind == Kind::Edge || t.mKind == Kind::Board) && t.mDest.Contains(x, h / 2));
 						if (!aCovered)
 						{
 							Check(false, aWhich + ": the backdrop and the game's screen fill the window across");
@@ -529,6 +596,22 @@ int main()
 						}
 					}
 				}
+			}
+			else if (aCase == 6)
+				Check(std::abs(aScreenTile->mDest.mX + STORE_MIDDLE * aScreenTile->mDest.mWidth / 800 - (aSafe.mX + aSafe.mWidth / 2)) < EPSILON,
+					aWhich + ": Crazy Dave and his car are in the middle of the safe area");
+			else if (aCase == 7)
+			{
+				Check(std::abs(aScreenTile->mDest.mX + aScreenTile->mDest.mWidth / 2 - (aSafe.mX + aSafe.mWidth / 2)) < EPSILON, aWhich + ": the game's screen is in the middle of the safe area");
+				// boards at both sides, from the window's edges to the screen's, nothing else around it
+				bool aLeft = false, aRight = false;
+				for (const Tile& t : aFramed)
+				{
+					aLeft = aLeft || (t.mKind == Kind::Board && t.mIndex == 0 && std::abs(t.mDest.mX - aSafe.mX) < EPSILON && std::abs(t.mDest.Right() - aScreenTile->mDest.mX) < EPSILON);
+					aRight = aRight || (t.mKind == Kind::Board && t.mIndex == 1 && std::abs(t.mDest.mX - aScreenTile->mDest.Right()) < EPSILON && std::abs(t.mDest.Right() - w) < EPSILON);
+					Check(t.mKind != Kind::Surround, aWhich + ": nothing around it but the boards");
+				}
+				Check(aLeft && aRight, aWhich + ": boards at both sides, from the window's edges to the screen's");
 			}
 			else
 				Check(std::abs(aScreenTile->mDest.mX + aScreenTile->mDest.mWidth / 2 - (aSafe.mX + aSafe.mWidth / 2)) < EPSILON, aWhich + ": the game's screen is in the middle of the safe area");

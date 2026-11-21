@@ -234,7 +234,7 @@ void CheckPicture(LawnApp* theApp, const GLInterface::FrameCapture& theRef, cons
 	{
 		const PresentationTile& t = aTiles[i];
 		Log("  tile {}{}: ({:.1f},{:.1f} {:.1f}x{:.1f}) -> window ({:.1f},{:.1f} {:.1f}x{:.1f}), x{:.3f}", i,
-			t.mImage ? " (backdrop image)" : t.mOverlay == 2 ? " (card)" : t.mOverlay == 3 ? " (sun counter)" : t.mOverlay == 4 ? " (progress meter)" : t.mOverlay == 5 ? " (menu button)" : t.mOverlay == 6 ? " (shovel)" : t.mOverlay == 7 ? " (conveyor belt)" : t.mOverlay == 8 ? " (weather)" : t.mOverlay == 10 ? " (surroundings)" : t.mOverlay == 11 ? " (beyond the screen)" : t.mOverlay == 12 ? " (band)" : t.mOverlay == 13 ? " (title)" : t.mBlur ? " (blurred)" : "",
+			t.mImage ? " (backdrop image)" : t.mOverlay == 2 ? " (card)" : t.mOverlay == 3 ? " (sun counter)" : t.mOverlay == 4 ? " (progress meter)" : t.mOverlay == 5 ? " (menu button)" : t.mOverlay == 6 ? " (shovel)" : t.mOverlay == 7 ? " (conveyor belt)" : t.mOverlay == 8 ? " (weather)" : t.mOverlay == 10 ? " (surroundings)" : t.mOverlay == 11 ? " (beyond the screen)" : t.mOverlay == 12 ? " (band)" : t.mOverlay == 13 ? " (title)" : t.mOverlay == 14 ? " (store front)" : t.mOverlay == 15 ? " (backdrop's edge)" : t.mOverlay == 16 ? (t.mOverlayIndex == 2 ? " (black under the notch)" : " (cards' board)") : t.mBlur ? " (blurred)" : "",
 			t.mSource.mX, t.mSource.mY, t.mSource.mWidth, t.mSource.mHeight, t.mDest.mX, t.mDest.mY, t.mDest.mWidth,
 			t.mDest.mHeight, t.mDest.mWidth / t.mSource.mWidth);
 	}
@@ -250,11 +250,11 @@ void CheckPicture(LawnApp* theApp, const GLInterface::FrameCapture& theRef, cons
 		size_t aBackdrops = 0, aWeather = 0;
 		for (const PresentationTile& t : aTiles)
 		{
-			aBackdrops += t.mImage != nullptr;
+			aBackdrops += t.mImage != nullptr || t.mOverlay == static_cast<int>(PhoneLayout::Kind::Edge);
 			aWeather += t.mOverlay == 8;
 		}
-		Log("  a stormy night: {} pieces of the backdrop, {} of weather over them; the picture is not checked", aBackdrops, aWeather);
-		Check(aWeather == aBackdrops, "the darkness of the storm is over every piece of the backdrop");
+		Log("  a stormy night: {} pieces of the backdrop (and its edges going on), {} of weather over them; the picture is not checked", aBackdrops, aWeather);
+		Check(aWeather == aBackdrops, "the darkness of the storm is over every piece of the backdrop and its edges going on");
 		return;
 	}
 
@@ -357,7 +357,9 @@ void CheckPicture(LawnApp* theApp, const GLInterface::FrameCapture& theRef, cons
 		if (t.mOverlay != 0)
 		{
 			Log("  tile {} (drawn into the window): {:.1f}% black", i, aDarkFraction * 100);
-			Check(aDarkFraction < 0.25, std::format("tile {} (drawn into the window) is drawn", i));
+			// (but for the black under the notch, which is black)
+			bool aNotch = t.mOverlay == static_cast<int>(PhoneLayout::Kind::Board) && t.mOverlayIndex == 2;
+			Check(aNotch || aDarkFraction < 0.25, std::format("tile {} (drawn into the window) is drawn", i));
 			continue;
 		}
 		Log("  tile {}: {:.1f}% of points differ from the texture, {:.1f}% black", i, aTileFraction * 100, aDarkFraction * 100);
@@ -473,7 +475,7 @@ void CheckFramed(LawnApp* theApp, const GLInterface::FrameCapture& c, const std:
 		theWhat + ": the blurred copy covers the window");
 	int anExpectedSurround =
 		theExpected == Framed::MenuScene ? PhoneLayout::SURROUND_MENU : theExpected == Framed::Store ? PhoneLayout::SURROUND_STORE :
-		theExpected == Framed::Page ? PhoneLayout::SURROUND_PAGE : theExpected == Framed::Garden ? PhoneLayout::SURROUND_GARDEN :
+		theExpected == Framed::Page ? PhoneLayout::SURROUND_PAGE :
 		theExpected == Framed::Note ? PhoneLayout::SURROUND_NOTE : -1;
 	if (theExpected == Framed::Title)
 	{
@@ -482,6 +484,19 @@ void CheckFramed(LawnApp* theApp, const GLInterface::FrameCapture& c, const std:
 			aTitle = aTitle || t.mOverlay == 13;
 		Check(aTitle, theWhat + ": the title is drawn over the whole window");
 	}
+	else if (theExpected == Framed::Garden)
+	{
+		// boards as the cards' at both sides of its picture, from the window's edges to the screen's
+		bool aLeft = false, aRight = false;
+		for (const PresentationTile& t : c.mTiles)
+		{
+			if (t.mOverlay != static_cast<int>(PhoneLayout::Kind::Board))
+				continue;
+			aLeft = aLeft || (t.mOverlayIndex == 0 && t.mDest.mX < aSafeLeft + 0.5 && std::abs(t.mDest.mX + t.mDest.mWidth - aScreenX) < 1);
+			aRight = aRight || (std::abs(t.mDest.mX - (aScreenX + aScreenWidth)) < 1 && t.mDest.mX + t.mDest.mWidth > c.mPointWidth - 0.5);
+		}
+		Check(aLeft && (aRight || aScreenX + aScreenWidth > c.mPointWidth - 0.5), theWhat + ": boards as the cards' at both sides of it");
+	}
 	else if (theExpected != Framed::Any)
 		Check(aSurround == anExpectedSurround, theWhat + (anExpectedSurround > 0 ? std::string(": around it ") + SURROUNDS[anExpectedSurround] : std::string(": nothing around it but the blur")));
 	// (on the pool only the backdrop's part left of the lawn is shown, the image having no water: when the board is panned
@@ -489,10 +504,11 @@ void CheckFramed(LawnApp* theApp, const GLInterface::FrameCapture& c, const std:
 	bool aMayLack = theExpected == Framed::Backdrop && theApp->mBoard && theApp->mBoard->StageHasPool() && theApp->mBoard->mX != 0;
 	if (theExpected != Framed::Any)
 		Check(((aBackdrops > 0) || aMayLack) == (theExpected == Framed::Backdrop), theWhat + (theExpected == Framed::Backdrop ? ": the backdrop of the level is beside it" : ": no backdrop"));
-	if (theExpected == Framed::Backdrop || theExpected == Framed::Garden)
-		Check(std::abs(aScreenX + aScreenWidth - (aSafeLeft + aSafeWidth)) < 1, theWhat + ": the game's screen is where the level layout has it");
-	else if (theExpected == Framed::MenuScene || theExpected == Framed::Store)
-		Check(std::abs(aScreenX + aScreenWidth - c.mPointWidth) < 1, theWhat + ": the game's screen is against the window's right edge");
+	if (theExpected == Framed::Backdrop)
+		Check(std::abs(aScreenX + aScreenWidth - (aSafeLeft + aSafeWidth)) < 1 || (theApp->mBoard && theApp->mBoard->mX != 0),
+			theWhat + ": the game's screen is where the level layout has it (unless the board is panned)");
+	else if (theExpected == Framed::Store)
+		Check(std::abs(aScreenX + PhoneLayout::STORE_MIDDLE * aScale - (aSafeLeft + aSafeWidth / 2)) < 1, theWhat + ": Crazy Dave and his car are in the middle of the safe area");
 	else if (theExpected != Framed::Any)
 		Check(std::abs(aScreenX + aScreenWidth / 2 - (aSafeLeft + aSafeWidth / 2)) < 1, theWhat + ": the game's screen is in the middle of the safe area");
 	if (theApp->IsStormyNightLevel() || theApp->mCreditScreen)
@@ -1204,14 +1220,15 @@ void Update(LawnApp* theApp)
 		else if (gState.mTicks == 30)
 		{
 			Check(theApp->GetDialogCount() > 0, "tapping the menu button opened the menu");
-			Check(theApp->mPhonePresentation == LawnApp::PhonePresentation::Framed, "the menu is shown framed, out of the level layout");
+			Check(InLevelLayout(theApp), "the menu is shown over the level layout, its cards and bar where they were");
 			aGL->mCapture.mRequested = true;
 		}
 		else if (gState.mTicks > 30 && (aGL->mCapture.mDone || gState.mTicks > 300))
 		{
 			if (aGL->mCapture.mDone)
 			{
-				CheckFramed(theApp, aGL->mCapture, "the menu", Framed::Backdrop);
+				Check(BlackCells(aGL->mCapture, gState.mHasSafe ? gState.mSafe.x : 0) == 0 || theApp->IsStormyNightLevel(),
+					"the menu over the level: nothing large is black right of the safe area's left edge");
 				SaveWindow(aGL->mCapture, gState.mLevels[gState.mLevel - 1].mName + " menu");
 			}
 			aGL->mCapture = GLInterface::FrameCapture{};

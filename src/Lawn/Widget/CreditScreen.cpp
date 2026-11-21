@@ -1011,7 +1011,12 @@ void CreditScreen::Draw(Graphics* g)
 		aBackground2G.mTransX += aTransformBackground2.mTransX + 220.0f;
 		if (aDrawPool || aDrawNightPool)
 		{
-			mApp->mPoolEffect->PoolEffectDraw(&aBackground2G, aDrawNightPool);
+			// drawn past the screen's edges too (the phone layout): the pool's picture is wider than the pool, its end cut
+			// where the screen's edge cuts it in a level
+			Graphics aPoolG(aBackground2G);
+			if (mApp->mDrawingPhoneOverlay)
+				aPoolG.ClipRect(-BOARD_WIDTH, -BOARD_HEIGHT, 2 * BOARD_WIDTH, 3 * BOARD_HEIGHT);
+			mApp->mPoolEffect->PoolEffectDraw(&aPoolG, aDrawNightPool);
 		}
 	}
 

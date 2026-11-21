@@ -59,6 +59,15 @@ enum class Kind
 				// the window; no taps
 	Title,		// the title over the whole window: its picture covering it, its logo and loading bar where the game's screen
 				// (mDest) has them; taps go to the screen under it
+	StoreFront,	// over the store's screen (where mDest is, mSource of it): the far end of the car, which its picture cuts at
+				// the screen's edge, fading into the sky beyond; taps go to the screen under it
+	Edge,		// past an end of the backdrop's image (mSource: its column at that end, in the game's coordinates), out to the
+				// window's edge: the image's edge going on, blurred, and darkening towards the window's edge; no taps
+	Board,		// down the left edge of the window, from its top to its bottom, the wooden board of the seed bank turned
+				// upright, which the cards lie on (mSource: its size in the board's units, the cards' scale); over where the
+				// level's own picture ends short of the window's edge; mIndex 1: one down the right edge, its rim on its
+				// left (beside a garden, whose picture ends at the screen's edges); mIndex 2: plain black, left of the board
+				// under the notch or the Dynamic Island; it takes taps and does nothing with them
 };
 
 // Where something goes in the window (mDest, in window points), and what of the game it shows or stands for (mSource,
@@ -69,15 +78,14 @@ struct Tile
 	Box		mDest;
 	Kind	mKind = Kind::Screen;
 	int		mIndex = -1;	// of the packet, for a card
-	bool	mMirrored = false;	// a backdrop drawn mirrored left to right (going on past the image's end)
 
 	bool	Overlay() const { return mKind != Kind::Screen && mKind != Kind::Backdrop && mKind != Kind::Blur; }
 	bool	TakesTaps() const
 	{
 		return mKind != Kind::Backdrop && mKind != Kind::Weather && mKind != Kind::Blur && mKind != Kind::Surround && mKind != Kind::Beyond &&
-			mKind != Kind::Band && mKind != Kind::Title;
+			mKind != Kind::Band && mKind != Kind::Title && mKind != Kind::StoreFront && mKind != Kind::Edge;
 	}
-	bool	TakesNoTap() const { return mKind == Kind::SunCounter || mKind == Kind::Meter || mKind == Kind::Conveyor; }
+	bool	TakesNoTap() const { return mKind == Kind::SunCounter || mKind == Kind::Meter || mKind == Kind::Conveyor || mKind == Kind::Board; }
 };
 
 // What goes on around the game's screen on a screen without a lawn behind (PhoneLayoutDraw draws it)
@@ -87,7 +95,7 @@ enum Surround
 	SURROUND_MENU,		// the main menu's scenery, and past its edges the achievements' and Zombatar's own when it slides to them
 	SURROUND_STORE,		// the store's fence going on, and Crazy Dave whole
 	SURROUND_PAGE,		// a page (the almanac, the lists of mini-games, an award) laid over the main menu's scenery, still
-	SURROUND_GARDEN,	// the Zen Garden's own picture going on
+	SURROUND_GARDEN,	// a garden (the Zen Garden's, the aquarium): its picture ends at the screen's edges, boards as the cards' beside it
 	SURROUND_NOTE,		// a zombie's note: the picture behind it (drawn larger than the screen) going on
 	SURROUND_TREE,		// the Tree of Wisdom's sky and hill going on, its clouds drifting past
 	SURROUND_CREDITS,	// the credits going on past the screen's edges as they draw themselves (their scenes are larger
@@ -116,8 +124,9 @@ struct Input
 	bool				mDarkWeather = false;	// the game darkens all of its screen (the stormy night): the backdrop too
 	int					mSurround = SURROUND_NONE;	// without a lawn behind (framed, or in a level without a backdrop): what goes
 													// on around the game's screen
-	bool				mSurroundAtRight = false;	// and the screen against the window's right edge (the main menu, the store)
 	bool				mTitle = false;				// the title is shown: drawn over the whole window
+	double				mCardSlots = 6;				// framed with a lawn behind: the cards the level has (or the slots of its
+	double				mCardPad = 0;				// conveyor belt, and its pad), for the board they lie on in the level
 	bool				mBeyond = false;		// with the backdrop, what of the level lies past the screen's edges is drawn over it,
 												// and the band behind a message goes on across the window
 };
@@ -137,22 +146,30 @@ constexpr double	SUN_COUNTER_HEIGHT = 42;
 constexpr double	MIN_MENU_HEIGHT = 36;		// points high, the menu button, at the least
 constexpr double	CONVEYOR_SLOTS = 10;		// the length of the conveyor belt, in packets
 constexpr double	CONVEYOR_PAD = 5;			// card units between the cards and the sides of the belt
+// the middle of Crazy Dave and his car in the store's screen (he stands from about 90 left of it, the car reaches its
+// right edge), which goes in the middle of the window
+constexpr double	STORE_MIDDLE = 355;
+constexpr double	HOUSE_WIDTH = 220;			// the backdrop's part left of the game's screen in a level (the house)
 
-// The tiles, drawn in this order: the backdrop (when there is one: its part left of the game's screen stretched across
-// to the safe area, then its part right of it), the game's screen, the weather over the backdrop, the shovel, the menu button, the progress meter, the
-// sun counter, the conveyor belt, the cards. Empty when the screen is not wide enough for the layout to gain anything; the game then shows
-// its 800x600 screen as usual.
+// The tiles, drawn in this order: the backdrop (when there is one: its part left of the game's screen, then its part
+// right of it, both at the screen's scale, in line with it; past its right end, out to the window's edge, its edge going
+// on, darkening: Edge), the game's screen, the weather over the backdrop, the board the cards lie on (from the window's
+// left edge past the cards, and past where the level's own picture ends on the left: the backdrop's image, or the game's
+// screen without one), the shovel, the menu button, the
+// progress meter, the sun counter, the conveyor belt, the cards. Empty when the screen is not wide enough for the layout
+// to gain anything; the game then shows its 800x600 screen as usual.
 std::vector<Tile>	Compute(const Input& theInput);
 
 // Framed, outside the level layout (menus, the seed chooser, dialogs, ...), on a screen as wide as Compute needs, so
-// that no black shows: with a lawn behind (mBackdrop), the game's screen where Compute puts it, over the backdrop;
-// else as tall as the window, in the middle of the safe area or (mSurroundAtRight: what the picture cuts off at the
-// screen's right edge the phone's edge then cuts off) against the window's right edge, with what goes on around it
-// (mSurround); the title (mTitle) drawn over the whole window, its picture covering it.
-// Under all a
-// blurred copy of the game's screen that covers the window, where nothing else does. Uses mScreenWidth, mScreenHeight,
-// mSafeArea, mLawn (the game's screen), mBackdrop, mBeyond, mDarkWeather, mSurround and mSurroundAtRight.
-// Empty on narrower screens.
+// that no black shows: with a lawn behind (mBackdrop), the game's screen where Compute puts it; else as tall as the
+// window in the middle of the safe area (the Tree of Wisdom's too, and a garden's, with boards as the cards' at both
+// sides; the store's moved so that
+// Crazy Dave and his car are in the middle: STORE_MIDDLE), with what goes on around it (mSurround: the main menu's
+// scenery, the store's, ...); the title (mTitle) drawn over the whole window, its picture covering it; the store's car
+// fading out at its cut (StoreFront); with a lawn behind, the board the cards lie on in a level, where a level has it
+// (moving with the backdrop when the board pans, sliding off the window's edge when it pans to the street). Under all a
+// blurred copy of the game's screen that covers the window, where nothing else does. Uses mScreenWidth, mScreenHeight, mSafeArea, mLawn (the game's screen), mBackdrop, mBeyond,
+// mDarkWeather, mSurround and mTitle. Empty on narrower screens.
 std::vector<Tile>	ComputeFramed(const Input& theInput);
 
 // The point of the game's screen under a window point, through the topmost tile there that is not the backdrop; false

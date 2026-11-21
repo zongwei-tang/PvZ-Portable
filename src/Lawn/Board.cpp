@@ -6721,7 +6721,7 @@ void Board::DrawLevel(Graphics* g)
 
 	int aPosX = 780;
 	int aPosY = 595;
-	if (HasProgressMeter())
+	if (HasProgressMeter() && !mApp->PhoneLayoutMovesMeter())	// (the phone layout shows the meter elsewhere)
 	{
 		aPosX = 593;
 	}
