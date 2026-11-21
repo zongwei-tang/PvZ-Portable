@@ -6,6 +6,9 @@
 #   tests/phone_layout_selftest.sh build    build build-phone/pvz-portable with the self-test in it
 #   tests/phone_layout_selftest.sh run [phone...] [level...]
 #                                           run it on each phone (opens a window for a minute or two each)
+#   tests/phone_layout_selftest.sh show [phone] [level]
+#                                           open the game in the window of a phone, in a level (survival-day by default),
+#                                           to play it yourself, without sound; saves in build-phone/show-save/
 #
 # Phones: iphone15, iphonese, iphone15promax (all by default). Levels: adventure-1-1, adventure-1-3, survival-day,
 # survival-day-10-packets, survival-night, survival-pool, survival-fog, survival-roof (all by default).
@@ -69,8 +72,28 @@ run() {
 	return $status
 }
 
+show() {
+	local name=iphone15 level=survival-day
+	for arg in "$@"; do
+		case "$arg" in
+			iphone*) name="$arg" ;;
+			*) level="$arg" ;;
+		esac
+	done
+	if [ ! -f "$BUILD/main.pak" ] || [ ! -d "$BUILD/properties" ]; then
+		echo "build-phone/ needs main.pak and properties/ from the game." >&2
+		exit 2
+	fi
+	read -r screen safe <<<"$(phone "$name")"
+	mkdir -p "$BUILD/show-save"
+	SDL_AUDIO_DRIVER=dummy PVZP_PHONE_LAYOUT=1 PVZP_SELFTEST=1 PVZP_SELFTEST_SHOW=1 PVZP_SELFTEST_SCREEN="$screen" \
+		PVZP_SELFTEST_SAFE="$safe" PVZP_SELFTEST_LEVELS="$level" \
+		"$BUILD/pvz-portable" -savedir "$BUILD/show-save/" >/dev/null 2>&1
+}
+
 case "${1:-}" in
 	build) build ;;
+	show) shift; show "$@" ;;
 	run) shift; run "$@" ;;
-	*) sed -n '2,14p' "$0"; exit 2 ;;
+	*) sed -n '2,17p' "$0"; exit 2 ;;
 esac

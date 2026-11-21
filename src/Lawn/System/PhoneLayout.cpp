@@ -19,29 +19,24 @@ Tile MakeTile(const Box& theSource, double theX, double theY, double theScale)
 	return Tile{ theSource, Box{ theX, theY, theSource.mWidth * theScale, theSource.mHeight * theScale } };
 }
 
-void PacketSize(const Input& theInput, double& theWidth, double& theHeight)
-{
-	theWidth = theHeight = 0;
-	for (const Box& aPacket : theInput.mPackets)
-	{
-		theWidth = std::max(theWidth, aPacket.mWidth);
-		theHeight = std::max(theHeight, aPacket.mHeight);
-	}
-}
-
-// The size, in the game's units, of the packets laid out theColumns side by side
-void PacketsSize(const Input& theInput, int theColumns, double& theWidth, double& theHeight)
-{
-	double aPacketWidth = 0, aPacketHeight = 0;
-	PacketSize(theInput, aPacketWidth, aPacketHeight);
-	int aRows = theInput.mPackets.empty() ? 0 : (static_cast<int>(theInput.mPackets.size()) + theColumns - 1) / theColumns;
-	theWidth = aRows > 0 ? theColumns * aPacketWidth + (theColumns - 1) * ITEM_GAP : 0;
-	theHeight = aRows > 0 ? aRows * aPacketHeight + (aRows - 1) * ITEM_GAP : 0;
-}
-
 bool Within(const Box& theInner, const Box& theOuter)
 {
 	return theInner.mX >= theOuter.mX && theInner.mY >= theOuter.mY && theInner.Right() <= theOuter.Right() && theInner.Bottom() <= theOuter.Bottom();
+}
+
+// The two pieces a packet is shown in, side by side as a card: its picture, and its cost from the strip below it
+void PacketPieces(const Box& thePacket, Box& thePicture, Box& theCost)
+{
+	thePicture = Box{ thePacket.mX, thePacket.mY, thePacket.mWidth, PACKET_PICTURE_HEIGHT };
+	theCost = Box{ thePacket.mX + PACKET_COST_X, thePacket.mY + PACKET_PICTURE_HEIGHT, PACKET_COST_WIDTH, thePacket.mHeight - PACKET_PICTURE_HEIGHT };
+}
+
+// The two pieces of the sun counter, side by side: the sun, and the number below it
+void SunPieces(const Box& theCounter, Box& theSun, Box& theNumber)
+{
+	double aSunHeight = std::min(SUN_PICTURE_HEIGHT, theCounter.mHeight);
+	theSun = Box{ theCounter.mX, theCounter.mY, theCounter.mWidth, aSunHeight };
+	theNumber = Box{ theCounter.mX, theCounter.mY + aSunHeight, theCounter.mWidth, theCounter.mHeight - aSunHeight };
 }
 
 }
@@ -63,11 +58,7 @@ std::vector<Tile> Compute(const Input& theInput)
 		aScale = (aSafe.mWidth - MIN_COLUMN_WIDTH - COLUMN_GAP) / aLawn.mWidth;
 	if (aScale <= 0)
 		return aTiles;
-	// across: the house of the backdrop from the left edge of the safe area, so that only the notch side stays dark,
-	// unless that takes the game's screen past the right edge of the safe area (or there is no backdrop); then against it
 	double aLawnX = aSafe.Right() - aLawn.mWidth * aScale;
-	if (!theInput.mBackdrop.Empty() && theInput.mBackdrop.mX < aLawn.mX)
-		aLawnX = std::min(aLawnX, aSafe.mX + (aLawn.mX - theInput.mBackdrop.mX) * aScale);
 	double aLawnY = (theInput.mScreenHeight - aLawn.mHeight * aScale) / 2;
 	auto InPlace = [&](const Box& theSource)
 	{
@@ -98,50 +89,59 @@ std::vector<Tile> Compute(const Input& theInput)
 	aTiles.push_back(InPlace(aRight));
 	if (!aLeft.Empty())
 		aTiles.push_back(InPlace(aLeft));
-
-	// Of the strip along the top, the sun counter and the shovel stay where they are, and so does the menu button
-	if (!theInput.mSunCounter.Empty())
-		aTiles.push_back(InPlace(theInput.mSunCounter));
-	if (!theInput.mShovel.Empty())
-		aTiles.push_back(InPlace(theInput.mShovel));
 	if (!theInput.mMenuButton.Empty() && !Within(theInput.mMenuButton, aRight))
 		aTiles.push_back(InPlace(theInput.mMenuButton));
 
-	// The packets in a column over the house, left of the game's screen, as large as fit with one to three side by side
+	// The packets as cards, picture and cost side by side, in one column down the left edge of the safe area
+	double aColumnRight = aSafe.mX + EDGE_MARGIN;
 	if (!theInput.mPackets.empty())
 	{
-		Box aColumn{ aSafe.mX + EDGE_MARGIN, aSafe.mY + EDGE_MARGIN, aLawnX - COLUMN_GAP - aSafe.mX - EDGE_MARGIN,
-			aSafe.mHeight - 2 * EDGE_MARGIN };
-		if (aColumn.mWidth <= 0 || aColumn.mHeight <= 0)
-			return {};
-		int aColumns = 1;
-		double aColumnScale = 0;
-		for (int aTry = 1; aTry <= 3; aTry++)
+		double aCardWidth = 0, aCardHeight = 0;
+		for (const Box& aPacket : theInput.mPackets)
 		{
-			double aWidth = 0, aHeight = 0;
-			PacketsSize(theInput, aTry, aWidth, aHeight);
-			double aFit = std::min({ aColumn.mWidth / aWidth, aColumn.mHeight / aHeight, MAX_COLUMN_SCALE });
-			if (aFit > aColumnScale + 1e-9)
-			{
-				aColumnScale = aFit;
-				aColumns = aTry;
-			}
+			Box aPicture, aCost;
+			PacketPieces(aPacket, aPicture, aCost);
+			aCardWidth = std::max(aCardWidth, aPicture.mWidth + aCost.mWidth);
+			aCardHeight = std::max(aCardHeight, aPicture.mHeight);
 		}
-		if (aColumnScale <= 0)
+		size_t n = theInput.mPackets.size();
+		// down to the bottom of the screen, past the home indicator, as the phone versions have them
+		double aCardScale = std::min({ MAX_CARD_SCALE, (theInput.mScreenHeight - aSafe.mY - 2 * EDGE_MARGIN) / (n * aCardHeight + (n - 1) * CARD_GAP),
+			(aLawnX - COLUMN_GAP - aSafe.mX - EDGE_MARGIN) / aCardWidth });
+		if (aCardScale <= 0)
 			return {};
-
-		double aWidth = 0, aHeight = 0, aPacketWidth = 0, aPacketHeight = 0;
-		PacketsSize(theInput, aColumns, aWidth, aHeight);
-		PacketSize(theInput, aPacketWidth, aPacketHeight);
-		double aX = aColumn.mX + (aColumn.mWidth - aWidth * aColumnScale) / 2;
-		for (size_t i = 0; i < theInput.mPackets.size(); i++)
+		double aY = aSafe.mY + EDGE_MARGIN;
+		for (const Box& aPacket : theInput.mPackets)
 		{
-			int aRow = static_cast<int>(i) / aColumns;
-			int aCol = static_cast<int>(i) % aColumns;
-			aTiles.push_back(MakeTile(theInput.mPackets[i], aX + aCol * (aPacketWidth + ITEM_GAP) * aColumnScale,
-				aColumn.mY + aRow * (aPacketHeight + ITEM_GAP) * aColumnScale, aColumnScale));
+			Box aPicture, aCost;
+			PacketPieces(aPacket, aPicture, aCost);
+			double aX = aSafe.mX + EDGE_MARGIN;
+			aTiles.push_back(MakeTile(aPicture, aX, aY, aCardScale));
+			aTiles.push_back(MakeTile(aCost, aX + aPicture.mWidth * aCardScale, aY + (aPicture.mHeight - aCost.mHeight) * aCardScale, aCardScale));
+			aY += (aCardHeight + CARD_GAP) * aCardScale;
 		}
+		aColumnRight = aSafe.mX + EDGE_MARGIN + aCardWidth * aCardScale;
 	}
+
+	// Along the top, right of the cards: the sun counter, its sun and number side by side, then the shovel
+	double aBarX = aColumnRight + COLUMN_GAP;
+	double aBarY = aSafe.mY + EDGE_MARGIN;
+	if (!theInput.mSunCounter.Empty())
+	{
+		Box aSun, aNumber;
+		SunPieces(theInput.mSunCounter, aSun, aNumber);
+		double aBarScale = BAR_HEIGHT / aSun.mHeight;
+		aTiles.push_back(MakeTile(aSun, aBarX, aBarY, aBarScale));
+		aBarX += aSun.mWidth * aBarScale;
+		if (!aNumber.Empty())
+		{
+			aTiles.push_back(MakeTile(aNumber, aBarX, aBarY + (aSun.mHeight - aNumber.mHeight) / 2 * aBarScale, aBarScale));
+			aBarX += aNumber.mWidth * aBarScale;
+		}
+		aBarX += COLUMN_GAP;
+	}
+	if (!theInput.mShovel.Empty())
+		aTiles.push_back(MakeTile(theInput.mShovel, aBarX, aBarY, BAR_HEIGHT / theInput.mShovel.mHeight));
 	return aTiles;
 }
 

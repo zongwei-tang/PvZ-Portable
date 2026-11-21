@@ -72,6 +72,7 @@ struct State
 	bool					mLastTiled = false;
 	int						mTransitions = 0, mPlayTicks = 0, mTiledTicks = 0;
 	std::map<std::string, int> mOffReasons;
+	bool					mShow = false;		// only into the first level, then the player plays
 };
 
 State gState;
@@ -399,6 +400,8 @@ void Init(LawnApp* theApp)
 	if (const char* aSafe = std::getenv("PVZP_SELFTEST_SAFE"))
 		gState.mHasSafe = std::sscanf(aSafe, "%d,%d,%d,%d", &gState.mSafe.x, &gState.mSafe.y, &gState.mSafe.w, &gState.mSafe.h) == 4;
 	gState.mLevels = ParseLevels(std::getenv("PVZP_SELFTEST_LEVELS"));
+	if (const char* aShow = std::getenv("PVZP_SELFTEST_SHOW"))
+		gState.mShow = aShow[0] == '1';
 	if (const char* aReport = std::getenv("PVZP_SELFTEST_REPORT"))
 	{
 		gState.mReportPath = aReport;
@@ -481,7 +484,7 @@ void Update(LawnApp* theApp)
 		return;
 	gState.mTicks++;
 	gState.mTotalTicks++;
-	if (gState.mTotalTicks > 100 * 600)
+	if (!gState.mShow && gState.mTotalTicks > 100 * 600)
 	{
 		Check(false, "the test ended within ten minutes");
 		Finish();
@@ -548,11 +551,22 @@ void Update(LawnApp* theApp)
 		gFastMo = true;
 		while (theApp->GetDialogCount() > 0 && !theApp->mDialogMap.empty())
 			theApp->KillDialog(theApp->mDialogMap.begin()->first);
+		if (gState.mShow && aBoard && aBoard->mCutScene && aBoard->mCutScene->mSeedChoosing)
+		{
+			gFastMo = false;	// the player picks the seeds, and plays from here
+			gState.mStep = Step::Done;
+			break;
+		}
 		if (theApp->mSeedChooserScreen && aBoard && aBoard->mCutScene && aBoard->mCutScene->mSeedChoosing)
 			theApp->mSeedChooserScreen->PickRandomSeeds();
 		if (theApp->mGameScene == GameScenes::SCENE_PLAYING)
 		{
 			gFastMo = false;
+			if (gState.mShow)
+			{
+				gState.mStep = Step::Done;
+				break;
+			}
 			Goto(Step::WaitTiled);
 		}
 		else if (gState.mTicks > 100 * 60)
@@ -762,7 +776,8 @@ void Update(LawnApp* theApp)
 		break;
 
 	case Step::Done:
-		Finish();
+		if (!gState.mShow)
+			Finish();
 		break;
 	}
 }

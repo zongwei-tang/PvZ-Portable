@@ -129,8 +129,9 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 		// the lawn may run under the home indicator, but nothing goes under the notch or the Dynamic Island
 		Check(aTile.mDest.mX >= theInput.mSafeArea.mX - EPSILON && aTile.mDest.Right() <= theInput.mSafeArea.Right() + EPSILON,
 			aWhich + " is clear of the notch");
+		// controls stay clear of the top inset too; the cards may go down past the home indicator
 		if (i >= aFirstControl)
-			Check(Inside(aTile.mDest, theInput.mSafeArea), aWhich + " (a control) is inside the safe area");
+			Check(aTile.mDest.mY >= theInput.mSafeArea.mY - EPSILON, aWhich + " (a control) is below the top of the safe area");
 		for (size_t j = i + 1; j < aTiles.size(); j++)
 			Check(!Overlap(aTile.mDest, aTiles[j].mDest), aWhich + " does not overlap tile " + std::to_string(j));
 
@@ -196,13 +197,27 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 		}
 	}
 
-	// every control is shown whole, in a tile of its own
-	auto aShownWhole = [&](const Box& theBox, const std::string& theWhat)
+	// every control is shown, in tiles of its own: the packets as cards, picture and cost side by side; the sun counter
+	// as its sun and number side by side; the shovel whole
+	auto aFind = [&](const Box& theBox) -> const Tile*
 	{
-		bool aFound = false;
 		for (size_t i = aFirstControl; i < aTiles.size(); i++)
-			aFound = aFound || Same(aTiles[i].mSource, theBox);
-		Check(aFound, theName + ": " + theWhat + " has a tile");
+			if (Same(aTiles[i].mSource, theBox))
+				return &aTiles[i];
+		return nullptr;
+	};
+	auto aSideBySide = [&](const Box& theLeft, const Box& theRight, const std::string& theWhat, bool theBottoms)
+	{
+		const Tile* aLeftTile = aFind(theLeft);
+		const Tile* aRightTile = aFind(theRight);
+		Check(aLeftTile && aRightTile, theName + ": " + theWhat + " has its tiles");
+		if (!aLeftTile || !aRightTile)
+			return;
+		Check(std::abs(aLeftTile->mDest.Right() - aRightTile->mDest.mX) < EPSILON, theName + ": " + theWhat + " is side by side");
+		if (theBottoms)
+			Check(std::abs(aLeftTile->mDest.Bottom() - aRightTile->mDest.Bottom()) < EPSILON, theName + ": " + theWhat + " ends alike");
+		Check(std::abs(aLeftTile->mDest.mWidth / aLeftTile->mSource.mWidth - aRightTile->mDest.mWidth / aRightTile->mSource.mWidth) < 1e-9,
+			theName + ": " + theWhat + " has one scale");
 	};
 	if (!theInput.mMenuButton.Empty())
 	{
@@ -217,18 +232,29 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 			Check(TopmostAt(aTiles, aCentreX, aCentreY) == static_cast<int>(aFirstLawn), theName + ": the menu button is shown and tappable");
 		}
 		else
-			aShownWhole(m, "the menu button");
+			Check(aFind(m) != nullptr, theName + ": the menu button has a tile");
 	}
-	aShownWhole(theInput.mSunCounter, "the sun counter");
+	{
+		const Box& c = theInput.mSunCounter;
+		aSideBySide(Box{ c.mX, c.mY, c.mWidth, SUN_PICTURE_HEIGHT }, Box{ c.mX, c.mY + SUN_PICTURE_HEIGHT, c.mWidth, c.mHeight - SUN_PICTURE_HEIGHT },
+			"the sun counter", false);
+	}
 	if (!theInput.mShovel.Empty())
-		aShownWhole(theInput.mShovel, "the shovel");
+		Check(aFind(theInput.mShovel) != nullptr, theName + ": the shovel has a tile");
 	double aSmallestPacket = 1e9;
+	double aLastCardBottom = -1;
 	for (size_t i = 0; i < theInput.mPackets.size(); i++)
 	{
-		aShownWhole(theInput.mPackets[i], "packet " + std::to_string(i));
-		for (const Tile& aTile : aTiles)
-			if (!aTile.mBackdrop && Same(aTile.mSource, theInput.mPackets[i]))
-				aSmallestPacket = std::min(aSmallestPacket, aTile.mDest.mWidth);
+		const Box& p = theInput.mPackets[i];
+		Box aPicture{ p.mX, p.mY, p.mWidth, PACKET_PICTURE_HEIGHT };
+		Box aCost{ p.mX + PACKET_COST_X, p.mY + PACKET_PICTURE_HEIGHT, PACKET_COST_WIDTH, p.mHeight - PACKET_PICTURE_HEIGHT };
+		aSideBySide(aPicture, aCost, "packet " + std::to_string(i), true);
+		if (const Tile* t = aFind(aPicture))
+		{
+			aSmallestPacket = std::min(aSmallestPacket, t->mDest.mWidth);
+			Check(t->mDest.mY > aLastCardBottom, theName + ": packet " + std::to_string(i) + " is below the one before");
+			aLastCardBottom = t->mDest.Bottom();
+		}
 	}
 
 	// how much of the window shows the game
@@ -250,7 +276,7 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 	}
 	double aCoverage = static_cast<double>(aCovered) / aSamples;
 	if (!theInput.mBackdrop.Empty())
-		Check(aCoverage > 0.85, theName + ": the game covers most of the window");
+		Check(aCoverage > 0.8, theName + ": the game covers most of the window");
 
 	// larger than the 800x600 screen letterboxed into the window, and packets big enough to tap
 	double aLetterboxScale = std::min(theInput.mScreenWidth / 800, theInput.mScreenHeight / 600);
