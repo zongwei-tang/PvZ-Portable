@@ -431,29 +431,93 @@ int main()
 	CheckConveyor("iPhone 15 Pro Max, conveyor belt", 932, 430, Box{ 59, 0, 932 - 118, 430 - 21 }, { 0.4, 9.9 });
 	CheckConveyor("iPhone 15, empty conveyor belt", 852, 393, aPhoneSafe, {});
 
-	// framed, outside the levels: the game's screen as tall as the window in the middle of the safe area, over a blurred
-	// copy of its middle that covers the window
+	// framed, outside the level layout: in the middle of the safe area as tall as the window (with the main menu's
+	// scenery, or not), or with a lawn behind where the levels have the game's screen over the backdrop, wherever the
+	// board is panned to; always over a blurred copy that covers the window
 	for (auto [aName, w, h, aSafe] : { std::tuple{ "iPhone 15", 852.0, 393.0, aPhoneSafe }, std::tuple{ "iPhone SE", 667.0, 375.0, Box{ 0, 0, 667, 375 } },
 		std::tuple{ "iPhone 15 Pro Max", 932.0, 430.0, Box{ 59, 0, 932 - 118, 430 - 21 } }, std::tuple{ "iPhone 15, island on the left only", 852.0, 393.0, Box{ 59, 0, 793, 372 } } })
 	{
-		std::string aWhich = std::string(aName) + ", framed";
-		std::printf("%s\n", aWhich.c_str());
-		std::vector<Tile> aFramed = ComputeFramed(w, h, aSafe, Box{ 0, 0, 800, 600 });
-		Check(aFramed.size() == 2 && aFramed[0].mKind == Kind::Blur && aFramed[1].mKind == Kind::Screen, aWhich + ": the blurred copy, then the game's screen");
-		if (aFramed.size() != 2)
-			continue;
-		const Tile& aBlur = aFramed[0];
-		const Tile& aScreenTile = aFramed[1];
-		Check(Same(aBlur.mDest, Box{ 0, 0, w, h }), aWhich + ": the blurred copy covers the window");
-		Check(std::abs(aBlur.mSource.mWidth / aBlur.mSource.mHeight - w / h) < 1e-9 && Inside(aBlur.mSource, Box{ 0, 0, 800, 600 }),
-			aWhich + ": the blurred copy is a piece of the game's screen as wide for its height as the window");
-		Check(std::abs(aScreenTile.mDest.mHeight - h) < EPSILON && Same(aScreenTile.mSource, Box{ 0, 0, 800, 600 }), aWhich + ": the game's screen is as tall as the window");
-		Check(std::abs(aScreenTile.mDest.mX + aScreenTile.mDest.mWidth / 2 - (aSafe.mX + aSafe.mWidth / 2)) < EPSILON, aWhich + ": the game's screen is in the middle of the safe area");
-		Check(aScreenTile.mDest.mX >= aSafe.mX - EPSILON && aScreenTile.mDest.Right() <= aSafe.Right() + EPSILON, aWhich + ": the game's screen is clear of the notch");
-		double x = 0, y = 0;
-		Check(WindowToGame(aFramed, aScreenTile.mDest.mX + aScreenTile.mDest.mWidth / 2, h / 2, x, y) && std::abs(x - 400) < 1e-6 && std::abs(y - 300) < 1e-6,
-			aWhich + ": a tap in the middle goes to the middle of the game's screen");
-		Check(!WindowToGame(aFramed, aScreenTile.mDest.mX / 2, h / 2, x, y), aWhich + ": a tap on the blurred copy goes nowhere");
+		for (int aCase = 0; aCase < 7; aCase++)
+		{
+			static const char* const CASES[] = { "", ", main menu", ", lawn behind", ", lawn panned to the street", ", lawn panned to the house", ", a page",
+				", the store" };
+			std::string aWhich = std::string(aName) + ", framed" + CASES[aCase];
+			std::printf("%s\n", aWhich.c_str());
+			Input anInput;
+			anInput.mScreenWidth = w;
+			anInput.mScreenHeight = h;
+			anInput.mSafeArea = aSafe;
+			anInput.mLawn = Box{ 0, 0, 800, 600 };
+			anInput.mMenuScene = aCase == 1;
+			anInput.mPage = aCase == 5;
+			anInput.mMirrored = aCase == 6;
+			if (aCase >= 2 && aCase <= 4)
+				anInput.mBackdrop = Box{ aCase == 3 ? -600.0 : aCase == 4 ? -100.0 : -220.0, 0, 1400, 600 };
+			std::vector<Tile> aFramed = ComputeFramed(anInput);
+			Check(aFramed.size() >= 2 && aFramed[0].mKind == Kind::Blur, aWhich + ": the blurred copy first");
+			if (aFramed.size() < 2)
+				continue;
+			Check(Same(aFramed[0].mDest, Box{ 0, 0, w, h }) && Inside(aFramed[0].mSource, Box{ 0, 0, 800, 600 }) &&
+				std::abs(aFramed[0].mSource.mWidth / aFramed[0].mSource.mHeight - w / h) < 1e-9, aWhich + ": the blurred copy covers the window");
+			const Tile* aScreenTile = nullptr;
+			int aScenes = 0, aMirrored = 0;
+			for (const Tile& t : aFramed)
+			{
+				if (t.mKind == Kind::Screen)
+					aScreenTile = &t;
+				aScenes += t.mKind == Kind::MenuScene;
+				aMirrored += t.mKind == Kind::Mirrored;
+			}
+			Check(aScreenTile != nullptr && Same(aScreenTile->mSource, Box{ 0, 0, 800, 600 }), aWhich + ": the game's screen, whole");
+			if (!aScreenTile)
+				continue;
+			Check(std::abs(aScreenTile->mDest.mHeight - h) < EPSILON, aWhich + ": the game's screen is as tall as the window");
+			Check(aScreenTile->mDest.mX >= aSafe.mX - EPSILON && aScreenTile->mDest.Right() <= aSafe.Right() + EPSILON, aWhich + ": the game's screen is clear of the notch");
+			Check(aScenes == (aCase == 1 || aCase == 5 ? 1 : 0), aWhich + ": the main menu's scenery exactly in the main menu and around pages");
+			Check(aMirrored == (aCase == 6 ? 1 : 0), aWhich + ": the mirrored background exactly in the store");
+			if (aCase >= 1 && aCase <= 4)
+			{
+				// as in the level layout, so that nothing moves when a dialog opens in a level
+				std::vector<Tile> aLevel = Compute(GameInput(w, h, aSafe, 6, true));
+				const Tile* aLevelScreen = nullptr;
+				for (const Tile& t : aLevel)
+					if (t.mKind == Kind::Screen && Same(t.mSource, Box{ 0, 0, 800, 600 }))
+						aLevelScreen = &t;
+				Check(aLevelScreen && Same(aLevelScreen->mDest, aScreenTile->mDest), aWhich + ": the game's screen is where the level layout has it");
+				for (const Tile& t : aFramed)
+				{
+					if (t.mKind != Kind::Backdrop)
+						continue;
+					Check(Inside(t.mSource, anInput.mBackdrop), aWhich + ": a piece of the backdrop is of the image");
+					Check(!Overlap(t.mDest, aScreenTile->mDest), aWhich + ": the backdrop is beside the game's screen");
+					double aScaleX = t.mDest.mWidth / t.mSource.mWidth;
+					double aScale = aScreenTile->mDest.mWidth / 800;
+					Check(aScaleX >= aScale - 1e-9 && aScaleX <= 2 * aScale + 1e-9, aWhich + ": the backdrop is stretched twice as wide at the most");
+					Check(std::abs(t.mDest.mY - (aScreenTile->mDest.mY + (t.mSource.mY - 0) * aScale)) < EPSILON, aWhich + ": the backdrop lines up with the game's screen");
+				}
+				if (aCase == 2)
+				{
+					// the house and the street fill the window right of the safe area's left edge
+					for (double x = std::max(0.0, aSafe.mX) + 0.5; x < w; x += 3)
+					{
+						bool aCovered = aScreenTile->mDest.Contains(x, h / 2);
+						for (const Tile& t : aFramed)
+							aCovered = aCovered || (t.mKind == Kind::Backdrop && t.mDest.Contains(x, h / 2));
+						if (!aCovered)
+						{
+							Check(false, aWhich + ": the backdrop and the game's screen fill the window across");
+							break;
+						}
+					}
+				}
+			}
+			else
+				Check(std::abs(aScreenTile->mDest.mX + aScreenTile->mDest.mWidth / 2 - (aSafe.mX + aSafe.mWidth / 2)) < EPSILON, aWhich + ": the game's screen is in the middle of the safe area");
+			double x = 0, y = 0;
+			Check(WindowToGame(aFramed, aScreenTile->mDest.mX + aScreenTile->mDest.mWidth / 2, h / 2, x, y) && std::abs(x - 400) < 1e-6 && std::abs(y - 300) < 1e-6,
+				aWhich + ": a tap in the middle of the game's screen goes there");
+			Check(!WindowToGame(aFramed, aScreenTile->mDest.mX / 2, h / 2, x, y), aWhich + ": a tap beside the game's screen goes nowhere");
+		}
 	}
 
 	// screens that are not wide keep the 800x600 screen
@@ -461,7 +525,7 @@ int main()
 	Check(Compute(GameInput(1180, 820, Box{ 0, 0, 1180, 800 }, 6, true)).empty(), "iPad keeps the 800x600 screen");
 	Check(Compute(GameInput(800, 600, Box{ 0, 0, 800, 600 }, 6, true)).empty(), "a 4:3 window keeps the 800x600 screen");
 	Check(Compute(GameInput(1280, 800, Box{ 0, 0, 1280, 800 }, 6, true)).empty(), "a 16:10 window keeps the 800x600 screen");
-	Check(ComputeFramed(1180, 820, Box{ 0, 0, 1180, 800 }, Box{ 0, 0, 800, 600 }).empty(), "iPad keeps the 800x600 screen letterboxed outside the levels");
+	Check(ComputeFramed(GameInput(1180, 820, Box{ 0, 0, 1180, 800 }, 6, true)).empty(), "iPad keeps the 800x600 screen letterboxed outside the levels");
 
 	// a tap outside every tile hits nothing
 	std::vector<Tile> aTiles = Compute(GameInput(852, 393, aPhoneSafe, 6, true));

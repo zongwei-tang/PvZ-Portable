@@ -12,6 +12,9 @@
 #include "Lawn/Challenge.h"
 #include "Lawn/SeedPacket.h"
 #include "Lawn/Widget/GameButton.h"
+#include "Lawn/Widget/GameSelector.h"
+#include "PvzpLib/EffectSystem.h"
+#include "PvzpLib/Reanimator.h"
 #include "PvzpLib/PvzpCommon.h"
 #include "graphics/Font.h"
 #include "graphics/GLInterface.h"
@@ -20,6 +23,7 @@
 #include "widget/WidgetManager.h"
 #include <algorithm>
 #include <cmath>
+#include <span>
 #include <string>
 
 using namespace Sexy;
@@ -182,14 +186,73 @@ void DrawConveyor(Graphics* g, Board* theBoard, int theLength, int theWidth)
 	}
 }
 
+// The main menu's scenery around its screen, in the game's coordinates (the transform puts them in the window): its
+// sky and its layers mirrored at the edges of the screen, the tree on the left and the hills on the right (not the
+// tombstone: that would make a second one), so that they go on without a seam; and its clouds where they are, drifting
+// past the edges. Around the main menu, and around pages (the almanac, the lists of mini-games) the same.
+void DrawMenuScene(Graphics* g, LawnApp* theApp, const SexyMatrix3& theToWindow)
+{
+	// the main menu's own, or without it (the lists of mini-games replace it) one of ours for this drawing, still, at the
+	// end of its opening (and gone after it: a level draws every animation there is)
+	GameSelector* aSelector = theApp->mGameSelector.get();
+	Reanimation* aReanim = aSelector ? theApp->ReanimationTryToGet(aSelector->mSelectorReanimID) : nullptr;
+	Reanimation* anOwn = nullptr;
+	if (aReanim == nullptr)
+	{
+		anOwn = aReanim = theApp->AddReanimation(0.5f, 0.5f, 0, ReanimationType::REANIM_SELECTOR_SCREEN);
+		aReanim->PlayReanim("anim_open", ReanimLoopType::REANIM_PLAY_ONCE_AND_HOLD, 0, 0.0f);
+		aReanim->mAnimTime = 1.0f;
+		aReanim->mAnimRate = 0.0f;
+	}
+	// in the game's order: the sky, the clouds, the layers in front of them
+	const char* const SKY[] = { "SelectorScreen_BG" };
+	const char* const LEFT[] = { "SelectorScreen_BG_Left" };
+	const char* const RIGHT[] = { "SelectorScreen_BG_Center" };
+	auto DrawMirrored = [&](std::span<const char* const> theLeftTracks, std::span<const char* const> theRightTracks)
+	{
+		for (int aSide = 0; aSide < 2; aSide++)
+		{
+			// mirrored at x 0 or at x BOARD_WIDTH
+			SexyMatrix3 aMirror;
+			aMirror.m00 = -1; aMirror.m01 = 0; aMirror.m02 = aSide == 0 ? 0.0f : 2.0f * BOARD_WIDTH;
+			aMirror.m10 = 0; aMirror.m11 = 1; aMirror.m12 = 0;
+			aMirror.m20 = 0; aMirror.m21 = 0; aMirror.m22 = 1;
+			theApp->mGLInterface->PushTransform(theToWindow * aMirror, false);
+			PvzpTriangleGroup aTriangles;
+			for (const char* aTrack : aSide == 0 ? theLeftTracks : theRightTracks)
+			{
+				int anIndex = aReanim->FindTrackIndex(aTrack);
+				if (anIndex >= 0)
+					aReanim->DrawTrack(g, anIndex, RENDER_GROUP_NORMAL, &aTriangles);
+			}
+			aTriangles.DrawGroup(g);
+			theApp->mGLInterface->PopTransform();
+		}
+	};
+	DrawMirrored(SKY, SKY);
+	if (aSelector)
+	{
+		theApp->mGLInterface->PushTransform(theToWindow, false);
+		for (ReanimationID anID : aSelector->mCloudReanimID)
+			if (Reanimation* aCloud = theApp->ReanimationTryToGet(anID))
+				aCloud->Draw(g);
+		theApp->mGLInterface->PopTransform();
+	}
+	DrawMirrored(LEFT, RIGHT);
+	if (anOwn)
+		anOwn->ReanimationDie();
+}
+
 }
 
 void Overlay(LawnApp* theApp, const PresentationTile& theTile)
 {
 	Board* aBoard = theApp->mBoard;
-	if (aBoard == nullptr || !aBoard->mSeedBank || theApp->mWidgetManager == nullptr || theApp->mWidgetManager->mImage == nullptr)
-		return;
 	PhoneLayout::Kind aKind = static_cast<PhoneLayout::Kind>(theTile.mOverlay);
+	if (theApp->mWidgetManager == nullptr || theApp->mWidgetManager->mImage == nullptr)
+		return;
+	if (aKind != PhoneLayout::Kind::MenuScene && aKind != PhoneLayout::Kind::Mirrored && (aBoard == nullptr || !aBoard->mSeedBank))
+		return;
 
 	// what is drawn in its own units, scaled and moved into the tile through the transform of the GL interface
 	SexyTransform2D aTransform;
@@ -214,7 +277,9 @@ void Overlay(LawnApp* theApp, const PresentationTile& theTile)
 		break;
 	}
 	case PhoneLayout::Kind::Weather:
-		break;	// in window points, clipped to the tile
+	case PhoneLayout::Kind::MenuScene:
+	case PhoneLayout::Kind::Mirrored:
+		break;	// in window points, clipped to the tile; the scenery and the mirrored background set up their own transforms
 	case PhoneLayout::Kind::Meter:
 	case PhoneLayout::Kind::Menu:
 	case PhoneLayout::Kind::Shovel:
@@ -225,7 +290,7 @@ void Overlay(LawnApp* theApp, const PresentationTile& theTile)
 	default:
 		return;
 	}
-	if (aKind != PhoneLayout::Kind::Weather)
+	if (aKind != PhoneLayout::Kind::Weather && aKind != PhoneLayout::Kind::MenuScene && aKind != PhoneLayout::Kind::Mirrored)
 		aTransform.Translate(static_cast<float>(theTile.mDest.mX), static_cast<float>(theTile.mDest.mY));
 
 	Graphics g(theApp->mWidgetManager->mImage);
@@ -245,6 +310,35 @@ void Overlay(LawnApp* theApp, const PresentationTile& theTile)
 	case PhoneLayout::Kind::SunCounter:
 		DrawSunCounter(&g, aBoard);
 		break;
+	case PhoneLayout::Kind::Mirrored:
+	{
+		// the store's background mirrored at both edges of its screen
+		Image* aBackground = theTile.mOverlayIndex == 1 ? IMAGE_STORE_BACKGROUNDNIGHT : IMAGE_STORE_BACKGROUND;
+		if (aBackground == nullptr)
+			break;
+		float aScale = static_cast<float>(theTile.mDest.mWidth / theTile.mSource.mWidth);
+		for (int aSide = 0; aSide < 2; aSide++)
+		{
+			SexyTransform2D aMirror;
+			aMirror.m00 = -1;
+			aMirror.m02 = aSide == 0 ? 0.0f : 2.0f * static_cast<float>(theTile.mSource.mWidth);
+			aMirror.Scale(aScale, aScale);
+			aMirror.Translate(static_cast<float>(theTile.mDest.mX), static_cast<float>(theTile.mDest.mY));
+			theApp->mGLInterface->PushTransform(aMirror, false);
+			g.DrawImage(aBackground, 0, 0);
+			theApp->mGLInterface->PopTransform();
+		}
+		break;
+	}
+	case PhoneLayout::Kind::MenuScene:
+	{
+		SexyTransform2D aToWindow;
+		aToWindow.Scale(static_cast<float>(theTile.mDest.mWidth / theTile.mSource.mWidth), static_cast<float>(theTile.mDest.mHeight / theTile.mSource.mHeight));
+		aToWindow.Translate(static_cast<float>(theTile.mDest.mX - theTile.mSource.mX * theTile.mDest.mWidth / theTile.mSource.mWidth),
+			static_cast<float>(theTile.mDest.mY - theTile.mSource.mY * theTile.mDest.mHeight / theTile.mSource.mHeight));
+		DrawMenuScene(&g, theApp, aToWindow);
+		break;
+	}
 	case PhoneLayout::Kind::Weather:
 		if (aBoard->mChallenge && theApp->IsStormyNightLevel())
 			aBoard->mChallenge->DrawStormDarkness(&g);

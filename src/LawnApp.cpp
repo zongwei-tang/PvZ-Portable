@@ -1437,6 +1437,31 @@ bool LawnApp::PhoneLayoutMovesShovel()
 	return PhoneLayoutDraws(this, PhoneLayout::Kind::Shovel);
 }
 
+// The backdrop image of the level being played, which the board draws BOARD_OFFSET left of its left edge: the house left
+// of the lawn and the street right of it; none without a board or for a backdrop of another kind
+MemoryImage* LawnApp::PhoneBackdrop()
+{
+	if (mBoard == nullptr)
+		return nullptr;
+	Image* aBackdropImage = nullptr;
+	switch (mBoard->mBackground)
+	{
+	case BackgroundType::BACKGROUND_1_DAY:		aBackdropImage = IMAGE_BACKGROUND1;			break;
+	case BackgroundType::BACKGROUND_2_NIGHT:	aBackdropImage = IMAGE_BACKGROUND2;			break;
+	case BackgroundType::BACKGROUND_3_POOL:		aBackdropImage = IMAGE_BACKGROUND3;			break;
+	case BackgroundType::BACKGROUND_4_FOG:		aBackdropImage = IMAGE_BACKGROUND4;			break;
+	case BackgroundType::BACKGROUND_5_ROOF:		aBackdropImage = IMAGE_BACKGROUND5;			break;
+	case BackgroundType::BACKGROUND_6_BOSS:		aBackdropImage = IMAGE_BACKGROUND6BOSS;		break;
+	default:									break;
+	}
+	if (mBoard->mBackground == BackgroundType::BACKGROUND_1_DAY && mBoard->mLevel <= 4 && IsFirstTimeAdventureMode())
+		aBackdropImage = IMAGE_BACKGROUND1UNSODDED;		// the lawn is still being sodded
+	MemoryImage* aBackdrop = dynamic_cast<MemoryImage*>(aBackdropImage);
+	if (aBackdrop == nullptr || aBackdrop->mWidth <= 0 || aBackdrop->mHeight <= 0)
+		return nullptr;
+	return aBackdrop;
+}
+
 void LawnApp::UpdatePhoneLayout()
 {
 	if (!mGLInterface || !mWindow)
@@ -1464,6 +1489,19 @@ void LawnApp::UpdatePhoneLayout()
 		aPiece.mBlur = theTile.mKind == PhoneLayout::Kind::Blur;
 		return aPiece;
 	};
+	// a piece of the backdrop image (lying at theBackdrop in the game's coordinates), in the pixels of the image, whole
+	// ones, the window rectangle grown to match
+	auto BackdropPiece = [](const PhoneLayout::Tile& theTile, MemoryImage* theImage, const PhoneLayout::Box& theBackdrop)
+	{
+		double aScaleX = theTile.mDest.mWidth / theTile.mSource.mWidth, aScaleY = theTile.mDest.mHeight / theTile.mSource.mHeight;
+		double aLeft = std::floor(theTile.mSource.mX - theBackdrop.mX), aTop = std::floor(theTile.mSource.mY - theBackdrop.mY);
+		double aRight = std::ceil(theTile.mSource.Right() - theBackdrop.mX), aBottom = std::ceil(theTile.mSource.Bottom() - theBackdrop.mY);
+		PresentationTile aPiece{ FRect(aLeft, aTop, aRight - aLeft, aBottom - aTop),
+			FRect(theTile.mDest.mX + (aLeft + theBackdrop.mX - theTile.mSource.mX) * aScaleX, theTile.mDest.mY + (aTop + theBackdrop.mY - theTile.mSource.mY) * aScaleY,
+				(aRight - aLeft) * aScaleX, (aBottom - aTop) * aScaleY) };
+		aPiece.mImage = theImage;
+		return aPiece;
+	};
 	if (!aSuppressed && PhoneLayoutApplies())
 	{
 		const SeedBank& aBank = *mBoard->mSeedBank;
@@ -1473,23 +1511,8 @@ void LawnApp::UpdatePhoneLayout()
 		anInput.mSafeArea = aSafeBox;
 		anInput.mLawn = aScreenBox;
 
-		// the backdrop of the level, which the board draws BOARD_OFFSET left of the screen: the house left of the lawn and
-		// the street right of it
-		Image* aBackdropImage = nullptr;
-		switch (mBoard->mBackground)
-		{
-		case BackgroundType::BACKGROUND_1_DAY:		aBackdropImage = IMAGE_BACKGROUND1;			break;
-		case BackgroundType::BACKGROUND_2_NIGHT:	aBackdropImage = IMAGE_BACKGROUND2;			break;
-		case BackgroundType::BACKGROUND_3_POOL:		aBackdropImage = IMAGE_BACKGROUND3;			break;
-		case BackgroundType::BACKGROUND_4_FOG:		aBackdropImage = IMAGE_BACKGROUND4;			break;
-		case BackgroundType::BACKGROUND_5_ROOF:		aBackdropImage = IMAGE_BACKGROUND5;			break;
-		case BackgroundType::BACKGROUND_6_BOSS:		aBackdropImage = IMAGE_BACKGROUND6BOSS;		break;
-		default:									break;
-		}
-		if (mBoard->mBackground == BackgroundType::BACKGROUND_1_DAY && mBoard->mLevel <= 4 && IsFirstTimeAdventureMode())
-			aBackdropImage = IMAGE_BACKGROUND1UNSODDED;		// the lawn is still being sodded
-		MemoryImage* aBackdrop = dynamic_cast<MemoryImage*>(aBackdropImage);
-		if (aBackdrop != nullptr && aBackdrop->mWidth > 0 && aBackdrop->mHeight > 0)
+		MemoryImage* aBackdrop = PhoneBackdrop();
+		if (aBackdrop != nullptr)
 			anInput.mBackdrop = PhoneLayout::Box{ -static_cast<double>(BOARD_OFFSET), 0, static_cast<double>(aBackdrop->mWidth), static_cast<double>(aBackdrop->mHeight) };
 
 		// on a conveyor belt the packets on it, each where it is along the belt (they ride to the left, 50 apart, from x 91)
@@ -1527,15 +1550,7 @@ void LawnApp::UpdatePhoneLayout()
 		{
 			if (aTile.mKind == PhoneLayout::Kind::Backdrop)
 			{
-				// in the pixels of the image, whole ones, the window rectangle grown to match
-				double aScaleX = aTile.mDest.mWidth / aTile.mSource.mWidth, aScaleY = aTile.mDest.mHeight / aTile.mSource.mHeight;
-				double aLeft = std::floor(aTile.mSource.mX + BOARD_OFFSET), aTop = std::floor(aTile.mSource.mY);
-				double aRight = std::ceil(aTile.mSource.Right() + BOARD_OFFSET), aBottom = std::ceil(aTile.mSource.Bottom());
-				PresentationTile aPiece{ FRect(aLeft, aTop, aRight - aLeft, aBottom - aTop),
-					FRect(aTile.mDest.mX + (aLeft - BOARD_OFFSET - aTile.mSource.mX) * aScaleX, aTile.mDest.mY + (aTop - aTile.mSource.mY) * aScaleY,
-						(aRight - aLeft) * aScaleX, (aBottom - aTop) * aScaleY) };
-				aPiece.mImage = aBackdrop;
-				aTiles.push_back(aPiece);
+				aTiles.push_back(BackdropPiece(aTile, aBackdrop, anInput.mBackdrop));
 				continue;
 			}
 			PresentationTile aPiece = ToPresentation(aTile);
@@ -1557,9 +1572,46 @@ void LawnApp::UpdatePhoneLayout()
 	}
 	if (aTiles.empty() && !aSuppressed && PhoneScreen())
 	{
-		// anywhere else (menus, the seed chooser, dialogs, a level the layout is not for): framed, without black
-		for (const PhoneLayout::Tile& aTile : PhoneLayout::ComputeFramed(aWindowWidth, aWindowHeight, aSafeBox, aScreenBox))
-			aTiles.push_back(ToPresentation(aTile));
+		// anywhere else (menus, the seed chooser, dialogs, a level the layout is not for): framed, without black. With a
+		// board, over its backdrop where it lies now (the board pans in cutscenes); in the main menu with its scenery.
+		PhoneLayout::Input anInput;
+		anInput.mScreenWidth = aWindowWidth;
+		anInput.mScreenHeight = aWindowHeight;
+		anInput.mSafeArea = aSafeBox;
+		anInput.mLawn = aScreenBox;
+		// pages (the almanac, the lists of mini-games) over the main menu's scenery, or over the lawn in a level; the store
+		// with its background mirrored
+		anInput.mPage = GetDialog(Dialogs::DIALOG_ALMANAC) != nullptr || (mChallengeScreen != nullptr && mChallengeScreen->mVisible);
+		anInput.mMirrored = !anInput.mPage && GetDialog(Dialogs::DIALOG_STORE) != nullptr;
+		MemoryImage* aBackdrop = anInput.mMirrored ? nullptr : PhoneBackdrop();
+		if (aBackdrop != nullptr)
+		{
+			anInput.mBackdrop = PhoneLayout::Box{ static_cast<double>(mBoard->mX - BOARD_OFFSET), static_cast<double>(mBoard->mY),
+				static_cast<double>(aBackdrop->mWidth), static_cast<double>(aBackdrop->mHeight) };
+			if (mBoard->StageHasPool())
+				anInput.mBackdropRight = mBoard->mX;	// the image has no water: only what is left of the lawn
+		}
+		anInput.mDarkWeather = mBoard != nullptr && IsStormyNightLevel();
+		anInput.mMenuScene = mBoard == nullptr && mGameSelector && mGameSelector->mVisible && !mTitleScreen && !GetDialog(Dialogs::DIALOG_STORE) &&
+			!GetDialog(Dialogs::DIALOG_ALMANAC);
+		for (const PhoneLayout::Tile& aTile : PhoneLayout::ComputeFramed(anInput))
+		{
+			if (aTile.mKind == PhoneLayout::Kind::Backdrop)
+			{
+				aTiles.push_back(BackdropPiece(aTile, aBackdrop, anInput.mBackdrop));
+				continue;
+			}
+			PresentationTile aPiece = ToPresentation(aTile);
+			aPiece.mNoTap = !aTile.TakesTaps();
+			if (aTile.Overlay())
+			{
+				aPiece.mOverlay = static_cast<int>(aTile.mKind);
+				aPiece.mOverlayIndex = aTile.mKind == PhoneLayout::Kind::Mirrored && IsNight() ? 1 : 0;
+			}
+			aTiles.push_back(aPiece);
+		}
+		if (!mGLInterface->mDrawOverlay)
+			mGLInterface->mDrawOverlay = [this](const PresentationTile& theTile) { PhoneLayoutDraw::Overlay(this, theTile); };
 		if (!aTiles.empty())
 			mPhonePresentation = PhonePresentation::Framed;
 	}

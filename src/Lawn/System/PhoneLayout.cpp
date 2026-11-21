@@ -19,6 +19,70 @@ Tile MakeTile(const Box& theSource, double theX, double theY, double theScale, K
 	return Tile{ theSource, Box{ theX, theY, theSource.mWidth * theScale, theSource.mHeight * theScale }, theKind };
 }
 
+// The game's screen as tall as the window, against the right edge of the safe area, unless that leaves too little room
+// for the cards; then smaller, and centred in the height. Before it the backdrop left and right of it, in line with it,
+// over as much of the window as it covers: the image ends a little right of the safe area's left edge, and its part left
+// of the game's screen (the house) is stretched across to it (twice as wide at the most), so that no black shows there.
+// After it the darkness the game draws over its screen, if any, over the backdrop. False when there is no room.
+bool PlaceScreen(const Input& theInput, std::vector<Tile>& theTiles, double& theScale, double& theLawnX, double& theLawnY)
+{
+	const Box& aSafe = theInput.mSafeArea;
+	const Box& aLawn = theInput.mLawn;
+	double aScale = theInput.mScreenHeight / aLawn.mHeight;
+	if (aLawn.mWidth * aScale > aSafe.mWidth - MIN_COLUMN_WIDTH - GAP)
+		aScale = (aSafe.mWidth - MIN_COLUMN_WIDTH - GAP) / aLawn.mWidth;
+	if (aScale <= 0)
+		return false;
+	double aLawnX = aSafe.Right() - aLawn.mWidth * aScale;
+	double aLawnY = (theInput.mScreenHeight - aLawn.mHeight * aScale) / 2;
+	auto InPlace = [&](const Box& theSource)
+	{
+		return MakeTile(theSource, aLawnX + (theSource.mX - aLawn.mX) * aScale, aLawnY + (theSource.mY - aLawn.mY) * aScale, aScale);
+	};
+
+	size_t aFirstBackdrop = theTiles.size();
+	if (!theInput.mBackdrop.Empty())
+	{
+		const Box& aBack = theInput.mBackdrop;
+		double aLeft = std::max(aBack.mX, aLawn.mX - aLawnX / aScale);
+		double aTop = std::max(aBack.mY, aLawn.mY - aLawnY / aScale);
+		double aRight = std::min(aBack.Right(), aLawn.mX + (theInput.mScreenWidth - aLawnX) / aScale);
+		double aBottom = std::min(aBack.Bottom(), aLawn.mY + (theInput.mScreenHeight - aLawnY) / aScale);
+		if (aRight > aLeft && aBottom > aTop)
+		{
+			double aLeftEnd = std::min({ aLawn.mX, aRight, theInput.mBackdropRight });
+			if (aLeft < aLeftEnd)
+			{
+				Tile aTile = InPlace(Box{ aLeft, aTop, aLeftEnd - aLeft, aBottom - aTop });
+				aTile.mKind = Kind::Backdrop;
+				double aStretchTo = std::max({ 0.0, aSafe.mX, aTile.mDest.Right() - 2 * aTile.mDest.mWidth });
+				if (aTile.mDest.mX > aStretchTo && aTile.mDest.Right() >= aLawnX - 1e-9)
+				{
+					aTile.mDest.mWidth = aTile.mDest.Right() - aStretchTo;
+					aTile.mDest.mX = aStretchTo;
+				}
+				theTiles.push_back(aTile);
+			}
+			if (aRight > aLawn.Right() && aRight <= theInput.mBackdropRight)
+			{
+				double aFrom = std::max(aLawn.Right(), aLeft);
+				Tile aTile = InPlace(Box{ aFrom, aTop, aRight - aFrom, aBottom - aTop });
+				aTile.mKind = Kind::Backdrop;
+				theTiles.push_back(aTile);
+			}
+		}
+	}
+	size_t aEndBackdrop = theTiles.size();
+	theTiles.push_back(InPlace(aLawn));
+	if (theInput.mDarkWeather)
+		for (size_t i = aFirstBackdrop; i < aEndBackdrop; i++)
+			theTiles.push_back(Tile{ theTiles[i].mSource, theTiles[i].mDest, Kind::Weather });
+	theScale = aScale;
+	theLawnX = aLawnX;
+	theLawnY = aLawnY;
+	return true;
+}
+
 }
 
 std::vector<Tile> Compute(const Input& theInput)
@@ -29,60 +93,14 @@ std::vector<Tile> Compute(const Input& theInput)
 	if (theInput.mScreenHeight <= 0 || theInput.mScreenWidth / theInput.mScreenHeight < MIN_ASPECT || aSafe.Empty() || aLawn.Empty())
 		return aTiles;
 
-	// The game's screen as tall as the window, against the right edge of the safe area, unless that leaves too little
-	// room for the cards; then smaller, and centred in the height.
-	double aScale = theInput.mScreenHeight / aLawn.mHeight;
-	if (aLawn.mWidth * aScale > aSafe.mWidth - MIN_COLUMN_WIDTH - GAP)
-		aScale = (aSafe.mWidth - MIN_COLUMN_WIDTH - GAP) / aLawn.mWidth;
-	if (aScale <= 0)
-		return aTiles;
-	double aLawnX = aSafe.Right() - aLawn.mWidth * aScale;
-	double aLawnY = (theInput.mScreenHeight - aLawn.mHeight * aScale) / 2;
+	// the game's screen, which the game draws without the seed bank and what the layout puts elsewhere, over the backdrop
+	double aScale = 0, aLawnX = 0, aLawnY = 0;
+	if (!PlaceScreen(theInput, aTiles, aScale, aLawnX, aLawnY))
+		return {};
 	auto InPlace = [&](const Box& theSource)
 	{
 		return MakeTile(theSource, aLawnX + (theSource.mX - aLawn.mX) * aScale, aLawnY + (theSource.mY - aLawn.mY) * aScale, aScale);
 	};
-
-	// The backdrop left and right of the game's screen, in line with it, over as much of the window as it covers. The
-	// image ends a little right of the safe area's left edge: its part left of the game's screen (the house) is stretched
-	// across to it, so that no black shows there.
-	if (!theInput.mBackdrop.Empty())
-	{
-		const Box& aBack = theInput.mBackdrop;
-		double aLeft = std::max(aBack.mX, aLawn.mX - aLawnX / aScale);
-		double aTop = std::max(aBack.mY, aLawn.mY - aLawnY / aScale);
-		double aRight = std::min(aBack.Right(), aLawn.mX + (theInput.mScreenWidth - aLawnX) / aScale);
-		double aBottom = std::min(aBack.Bottom(), aLawn.mY + (theInput.mScreenHeight - aLawnY) / aScale);
-		if (aRight > aLeft && aBottom > aTop)
-		{
-			if (aLeft < aLawn.mX)
-			{
-				Tile aTile = InPlace(Box{ aLeft, aTop, aLawn.mX - aLeft, aBottom - aTop });
-				aTile.mKind = Kind::Backdrop;
-				double aStretchTo = std::max(0.0, aSafe.mX);
-				if (aTile.mDest.mX > aStretchTo)
-				{
-					aTile.mDest.mX = aStretchTo;
-					aTile.mDest.mWidth = aLawnX - aStretchTo;
-				}
-				aTiles.push_back(aTile);
-			}
-			if (aRight > aLawn.Right())
-			{
-				Tile aTile = InPlace(Box{ aLawn.Right(), aTop, aRight - aLawn.Right(), aBottom - aTop });
-				aTile.mKind = Kind::Backdrop;
-				aTiles.push_back(aTile);
-			}
-		}
-	}
-
-	// The game's screen, which the game draws without the seed bank and what the layout puts elsewhere; over the
-	// backdrop the darkness the game draws over its screen, if any
-	size_t aNumBackdrops = aTiles.size();
-	aTiles.push_back(InPlace(aLawn));
-	if (theInput.mDarkWeather)
-		for (size_t i = 0; i < aNumBackdrops; i++)
-			aTiles.push_back(Tile{ aTiles[i].mSource, aTiles[i].mDest, Kind::Weather });
 
 	// The scale of the cards: as large as the phone versions have them, and smaller when they would not fit down the
 	// window (past the home indicator, as the phone versions have them) or left of the game's screen. On a conveyor belt
@@ -170,18 +188,40 @@ std::vector<Tile> Compute(const Input& theInput)
 	return aTiles;
 }
 
-std::vector<Tile> ComputeFramed(double theScreenWidth, double theScreenHeight, const Box& theSafeArea, const Box& theScreen)
+std::vector<Tile> ComputeFramed(const Input& theInput)
 {
 	std::vector<Tile> aTiles;
-	if (theScreenHeight <= 0 || theScreenWidth / theScreenHeight < MIN_ASPECT || theSafeArea.Empty() || theScreen.Empty())
+	const Box& aSafe = theInput.mSafeArea;
+	const Box& aScreen = theInput.mLawn;
+	if (theInput.mScreenHeight <= 0 || theInput.mScreenWidth / theInput.mScreenHeight < MIN_ASPECT || aSafe.Empty() || aScreen.Empty())
 		return aTiles;
-	// the blurred copy: the middle of the game's screen, as wide as it and as high as the window's shape gives
-	double aHeight = std::min(theScreen.mHeight, theScreen.mWidth * theScreenHeight / theScreenWidth);
-	aTiles.push_back(Tile{ Box{ theScreen.mX, theScreen.mY + (theScreen.mHeight - aHeight) / 2, theScreen.mWidth, aHeight },
-		Box{ 0, 0, theScreenWidth, theScreenHeight }, Kind::Blur });
-	double aScale = std::min(theScreenHeight / theScreen.mHeight, theSafeArea.mWidth / theScreen.mWidth);
-	aTiles.push_back(MakeTile(theScreen, theSafeArea.mX + (theSafeArea.mWidth - theScreen.mWidth * aScale) / 2,
-		(theScreenHeight - theScreen.mHeight * aScale) / 2, aScale));
+	// under all, where nothing else covers the window: a blurred copy of the middle of the game's screen, as wide as it
+	// and as high as the window's shape gives
+	double aHeight = std::min(aScreen.mHeight, aScreen.mWidth * theInput.mScreenHeight / theInput.mScreenWidth);
+	aTiles.push_back(Tile{ Box{ aScreen.mX, aScreen.mY + (aScreen.mHeight - aHeight) / 2, aScreen.mWidth, aHeight },
+		Box{ 0, 0, theInput.mScreenWidth, theInput.mScreenHeight }, Kind::Blur });
+	if (!theInput.mBackdrop.Empty() || (theInput.mMenuScene && !theInput.mPage))
+	{
+		// a lawn behind, or the main menu: where the levels have the game's screen, over the backdrop, or with the main
+		// menu's scenery going on around it (most of it left of the screen, where the main menu's tree is)
+		double aScale = 0, aX = 0, aY = 0;
+		if (!PlaceScreen(theInput, aTiles, aScale, aX, aY))
+			return {};
+		if (theInput.mMenuScene)
+		{
+			Tile aScreenTile = aTiles.back();
+			aTiles.insert(aTiles.end() - 1, Tile{ aScreenTile.mSource, aScreenTile.mDest, Kind::MenuScene });
+		}
+		return aTiles;
+	}
+	// else in the middle of the safe area, as tall as the window
+	double aScale = std::min(theInput.mScreenHeight / aScreen.mHeight, aSafe.mWidth / aScreen.mWidth);
+	Tile aTile = MakeTile(aScreen, aSafe.mX + (aSafe.mWidth - aScreen.mWidth * aScale) / 2, (theInput.mScreenHeight - aScreen.mHeight * aScale) / 2, aScale);
+	if (theInput.mPage)
+		aTiles.push_back(Tile{ aTile.mSource, aTile.mDest, Kind::MenuScene });
+	if (theInput.mMirrored)
+		aTiles.push_back(Tile{ aTile.mSource, aTile.mDest, Kind::Mirrored });
+	aTiles.push_back(aTile);
 	return aTiles;
 }
 

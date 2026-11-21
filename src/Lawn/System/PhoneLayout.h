@@ -51,6 +51,8 @@ enum class Kind
 	Conveyor,	// the conveyor belt the cards ride up, in conveyor belt levels; it takes taps, and does nothing with them
 	Weather,	// over a piece of the backdrop, the darkness the game draws over its screen (the stormy night); no tap goes to it
 	Blur,		// the game's screen (mSource: a piece of it) blurred and dimmed, as the background of a framed screen; no tap goes to it
+	MenuScene,	// the scenery of the main menu, drawn around the game's screen (where mDest is, mSource of it); it takes no taps
+	Mirrored,	// the background of the store, mirrored at the edges of the game's screen (where mDest is, mSource of it); no taps
 };
 
 // Where something goes in the window (mDest, in window points), and what of the game it shows or stands for (mSource,
@@ -62,8 +64,11 @@ struct Tile
 	Kind	mKind = Kind::Screen;
 	int		mIndex = -1;	// of the packet, for a card
 
-	bool	Overlay() const { return mKind != Kind::Screen && mKind != Kind::Backdrop; }
-	bool	TakesTaps() const { return mKind != Kind::Backdrop && mKind != Kind::Weather && mKind != Kind::Blur; }
+	bool	Overlay() const { return mKind != Kind::Screen && mKind != Kind::Backdrop && mKind != Kind::Blur; }
+	bool	TakesTaps() const
+	{
+		return mKind != Kind::Backdrop && mKind != Kind::Weather && mKind != Kind::Blur && mKind != Kind::MenuScene && mKind != Kind::Mirrored;
+	}
 	bool	TakesNoTap() const { return mKind == Kind::SunCounter || mKind == Kind::Meter || mKind == Kind::Conveyor; }
 };
 
@@ -75,6 +80,7 @@ struct Input
 
 	Box					mLawn;				// the game's screen
 	Box					mBackdrop;			// where the backdrop image of the level lies, in the game's coordinates; empty without
+	double				mBackdropRight = 1e9;	// of the backdrop image only what is left of this (the pool is not in the image)
 
 	Box					mMenuButton;		// in the game's screen; empty when it is not shown
 	Box					mSunCounter;		// empty without one
@@ -87,6 +93,9 @@ struct Input
 	Box					mConveyorBelt;
 	std::vector<double>	mPacketSlots;
 	bool				mDarkWeather = false;	// the game darkens all of its screen (the stormy night): the backdrop too
+	bool				mMenuScene = false;		// framed: the main menu is shown, whose scenery goes on around it
+	bool				mPage = false;			// framed: a page in a frame is shown (the almanac, the lists of mini-games), over the main menu's scenery
+	bool				mMirrored = false;		// framed: the store is shown, its background mirrored at the edges
 };
 
 constexpr double	MIN_ASPECT = 1.65;			// narrower screens (iPad, 4:3 and 16:10) keep the 800x600 screen
@@ -111,10 +120,14 @@ constexpr double	CONVEYOR_PAD = 5;			// card units between the cards and the sid
 // its 800x600 screen as usual.
 std::vector<Tile>	Compute(const Input& theInput);
 
-// Outside the levels (menus, the seed chooser, dialogs, ...), on a screen as wide as Compute needs: the game's screen as
-// tall as the window, in the middle of the safe area, over a blurred copy of it that covers the window, so that no black
-// shows. The tiles: the blurred copy, then the game's screen. Empty on narrower screens.
-std::vector<Tile>	ComputeFramed(double theScreenWidth, double theScreenHeight, const Box& theSafeArea, const Box& theScreen);
+// Framed, outside the level layout (menus, the seed chooser, dialogs, ...), on a screen as wide as Compute needs, so
+// that no black shows: with a lawn behind (mBackdrop) or in the main menu (mMenuScene), the game's screen where Compute
+// puts it, over the backdrop or with the main menu's scenery around it; else as tall as the window in the middle of the
+// safe area: a page (mPage) over the main menu's scenery, the store (mMirrored) with its background mirrored around it.
+// Under all a
+// blurred copy of the game's screen that covers the window, where nothing else does. Uses mScreenWidth, mScreenHeight,
+// mSafeArea, mLawn (the game's screen), mBackdrop, mDarkWeather, mMenuScene, mPage and mMirrored. Empty on narrower screens.
+std::vector<Tile>	ComputeFramed(const Input& theInput);
 
 // The point of the game's screen under a window point, through the topmost tile there that is not the backdrop; false
 // when there is none, or when it is one that takes taps and does nothing with them.

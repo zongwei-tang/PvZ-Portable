@@ -18,6 +18,7 @@
 #include "Lawn/System/ProfileMgr.h"
 #include "Lawn/Widget/GameButton.h"
 #include "Lawn/Widget/SeedChooserScreen.h"
+#include "Lawn/Widget/TitleScreen.h"
 #include "graphics/GLInterface.h"
 #include "imagelib/ImageLib.h"
 #include <algorithm>
@@ -39,7 +40,7 @@ namespace
 
 enum class Step
 {
-	Start, Loading, MainMenu, NextLevel, Intro, WaitTiled, RefOff, RefCapture, TiledOn, TiledCapture,
+	Start, Loading, MainMenu, Screens, NextLevel, Intro, WaitTiled, RefOff, RefCapture, TiledOn, TiledCapture,
 	PickPacket, PlacePlant, PickShovel, Dig, Menu, MenuClosed, Watch, Done
 };
 
@@ -70,6 +71,8 @@ struct State
 	bool					mSuppress = false;
 	int						mPacket = -1, mCol = -1, mRow = -1;
 	int						mChooserTicks = 0;	// the seed chooser up
+	int						mScreen = 0;		// of the screens outside the levels
+	bool					mTitleSeen = false;
 	Plant*					mPlant = nullptr;
 	Plant*					mPlantBefore = nullptr;	// the pot or lily pad it goes on, if any
 	bool					mLastTiled = false;
@@ -202,7 +205,7 @@ void CheckPicture(LawnApp* theApp, const GLInterface::FrameCapture& theRef, cons
 	{
 		const PresentationTile& t = aTiles[i];
 		Log("  tile {}{}: ({:.1f},{:.1f} {:.1f}x{:.1f}) -> window ({:.1f},{:.1f} {:.1f}x{:.1f}), x{:.3f}", i,
-			t.mImage ? " (backdrop image)" : t.mOverlay == 2 ? " (card)" : t.mOverlay == 3 ? " (sun counter)" : t.mOverlay == 4 ? " (progress meter)" : t.mOverlay == 5 ? " (menu button)" : t.mOverlay == 6 ? " (shovel)" : t.mOverlay == 7 ? " (conveyor belt)" : t.mOverlay == 8 ? " (weather)" : "",
+			t.mImage ? " (backdrop image)" : t.mOverlay == 2 ? " (card)" : t.mOverlay == 3 ? " (sun counter)" : t.mOverlay == 4 ? " (progress meter)" : t.mOverlay == 5 ? " (menu button)" : t.mOverlay == 6 ? " (shovel)" : t.mOverlay == 7 ? " (conveyor belt)" : t.mOverlay == 8 ? " (weather)" : t.mOverlay == 10 ? " (main menu scenery)" : t.mOverlay == 11 ? " (mirrored background)" : t.mBlur ? " (blurred)" : "",
 			t.mSource.mX, t.mSource.mY, t.mSource.mWidth, t.mSource.mHeight, t.mDest.mX, t.mDest.mY, t.mDest.mWidth,
 			t.mDest.mHeight, t.mDest.mWidth / t.mSource.mWidth);
 	}
@@ -400,30 +403,55 @@ bool InLevelLayout(LawnApp* theApp)
 	return theApp->mPhonePresentation == LawnApp::PhonePresentation::Level && theApp->mGLInterface->IsTiled();
 }
 
-// a frame shown framed: the game's screen as tall as the window in the middle of the safe area, over its blurred copy,
-// and nothing black right of the safe area's left edge
-void CheckFramed(const GLInterface::FrameCapture& c, const std::string& theWhat)
+// a frame shown framed: the game's screen as tall as the window, a blurred copy under all, nothing black right of the
+// safe area's left edge, and around the screen: the main menu's scenery (with the screen where the level layout has it,
+// or in the middle for a page), the backdrop of the level (the screen where the level layout has it), the store's
+// background mirrored, or nothing but the blur
+enum class Framed { Plain, MenuScene, Backdrop, Page, Mirrored };
+
+void CheckFramed(LawnApp* theApp, const GLInterface::FrameCapture& c, const std::string& theWhat, Framed theExpected)
 {
 	const PresentationTile* aBlur = nullptr;
 	const PresentationTile* aScreen = nullptr;
+	int aBackdrops = 0, aScenes = 0, aMirrored = 0;
 	for (const PresentationTile& t : c.mTiles)
 	{
 		if (t.mBlur)
 			aBlur = &t;
-		else if (t.mOverlay == 0 && t.mImage == nullptr)
+		else if (t.mImage != nullptr)
+			aBackdrops++;
+		else if (t.mOverlay == 10)
+			aScenes++;
+		else if (t.mOverlay == 11)
+			aMirrored++;
+		else if (t.mOverlay == 0)
 			aScreen = &t;
 	}
-	Check(c.mTiled && aBlur && aScreen && c.mTiles.size() == 2, theWhat + " is framed: the game's screen over its blurred copy");
+	Check(c.mTiled && aBlur && aScreen, theWhat + " is framed: the game's screen, a blurred copy under all");
 	if (!aBlur || !aScreen)
 		return;
 	double aSafeLeft = gState.mHasSafe ? gState.mSafe.x : 0, aSafeWidth = gState.mHasSafe ? gState.mSafe.w : c.mPointWidth;
-	Log("  {}: the game's screen at ({:.1f},{:.1f} {:.1f}x{:.1f}), the blurred copy over ({:.0f},{:.0f} {:.0f}x{:.0f})", theWhat, aScreen->mDest.mX,
-		aScreen->mDest.mY, aScreen->mDest.mWidth, aScreen->mDest.mHeight, aBlur->mDest.mX, aBlur->mDest.mY, aBlur->mDest.mWidth, aBlur->mDest.mHeight);
-	Check(std::abs(aScreen->mDest.mHeight - c.mPointHeight) < 1 && std::abs(aScreen->mDest.mWidth / aScreen->mDest.mHeight - 800.0 / 600.0) < 1e-6,
-		theWhat + ": the game's screen is as tall as the window");
-	Check(std::abs(aScreen->mDest.mX + aScreen->mDest.mWidth / 2 - (aSafeLeft + aSafeWidth / 2)) < 1, theWhat + ": the game's screen is in the middle of the safe area");
+	// the whole screen, also where a page's frame is cut off it
+	double aScale = aScreen->mDest.mHeight / aScreen->mSource.mHeight;
+	double aScreenX = aScreen->mDest.mX - aScreen->mSource.mX * aScale, aScreenWidth = 800 * aScale;
+	Log("  {}: the game's screen at ({:.1f},{:.1f} {:.1f}x{:.1f}); {} pieces of the backdrop, {} of scenery, {} mirrored", theWhat, aScreenX,
+		aScreen->mDest.mY, aScreenWidth, aScreen->mDest.mHeight, aBackdrops, aScenes, aMirrored);
+	Check(std::abs(aScreen->mDest.mHeight - c.mPointHeight) < 1, theWhat + ": the game's screen is as tall as the window");
 	Check(aBlur->mDest.mX <= 0 && aBlur->mDest.mY <= 0 && aBlur->mDest.mWidth >= c.mPointWidth && aBlur->mDest.mHeight >= c.mPointHeight,
 		theWhat + ": the blurred copy covers the window");
+	bool aScenery = theExpected == Framed::MenuScene || theExpected == Framed::Page;
+	Check((aScenes > 0) == aScenery, theWhat + (aScenery ? ": the main menu's scenery is around it" : ": no main menu scenery"));
+	// (on the pool only the backdrop's part left of the lawn is shown, the image having no water: when the board is panned
+	// there may be none of it on the window)
+	bool aMayLack = theExpected == Framed::Backdrop && theApp->mBoard && theApp->mBoard->StageHasPool() && theApp->mBoard->mX != 0;
+	Check(((aBackdrops > 0) || aMayLack) == (theExpected == Framed::Backdrop), theWhat + (theExpected == Framed::Backdrop ? ": the backdrop of the level is beside it" : ": no backdrop"));
+	Check((aMirrored > 0) == (theExpected == Framed::Mirrored), theWhat + (theExpected == Framed::Mirrored ? ": the background is mirrored around it" : ": no mirrored background"));
+	if (theExpected == Framed::Backdrop || theExpected == Framed::MenuScene)
+		Check(std::abs(aScreenX + aScreenWidth - (aSafeLeft + aSafeWidth)) < 1, theWhat + ": the game's screen is where the level layout has it");
+	else
+		Check(std::abs(aScreenX + aScreenWidth / 2 - (aSafeLeft + aSafeWidth / 2)) < 1, theWhat + ": the game's screen is in the middle of the safe area");
+	if (theApp->IsStormyNightLevel())
+		return;	// dark but for its lightning: not checked
 	int aSamples = 0, aBlack = 0, aSides = 0, aSidesLit = 0;
 	for (double y = 1; y < c.mPointHeight; y += 2)
 	{
@@ -432,7 +460,7 @@ void CheckFramed(const GLInterface::FrameCapture& c, const std::string& theWhat)
 			int b = Brightness(Window(c, x, y));
 			aSamples++;
 			aBlack += b <= 12;
-			if (x < aScreen->mDest.mX - 1 || x > aScreen->mDest.mX + aScreen->mDest.mWidth + 1)
+			if (x < aScreenX - 1 || x > aScreenX + aScreenWidth + 1)
 			{
 				aSides++;
 				aSidesLit += b > 12;
@@ -442,7 +470,7 @@ void CheckFramed(const GLInterface::FrameCapture& c, const std::string& theWhat)
 	Log("  {}: {:.2f}% black right of the safe area's left edge; beside the game's screen {:.1f}% lit", theWhat, 100.0 * aBlack / std::max(1, aSamples),
 		100.0 * aSidesLit / std::max(1, aSides));
 	Check(aBlack * 100 < aSamples * 3, theWhat + ": nothing large is black right of the safe area's left edge");
-	Check(aSidesLit * 100 > aSides * 90, theWhat + ": beside the game's screen the blurred copy shows");
+	Check(aSidesLit * 100 > aSides * 90, theWhat + ": beside the game's screen something shows");
 }
 
 // --- taps through the tiles ----------------------------------------------------------------------------------------
@@ -668,6 +696,24 @@ void Update(LawnApp* theApp)
 	case Step::Loading:
 		if (!theApp->mLoadingThreadCompleted)
 			break;
+		if (theApp->mTitleScreen && !gState.mShow && !gState.mTitleSeen)
+		{
+			// the title screen (after the logos, a while into it), framed, before going on
+			if (theApp->mTitleScreen->mTitleState != TitleState::TITLESTATE_SCREEN || theApp->mTitleScreen->mTitleStateCounter > 0 && gState.mTicks < 3000 &&
+				theApp->mTitleScreen->mTitleAge < 200)
+				break;
+			if (!aGL->mCapture.mRequested && !aGL->mCapture.mDone)
+				aGL->mCapture.mRequested = true;
+			if (!aGL->mCapture.mDone)
+				break;
+			Log("");
+			Log("title screen");
+			CheckFramed(theApp, aGL->mCapture, "the title screen", Framed::Plain);
+			SaveWindow(aGL->mCapture, "title");
+			aGL->mCapture = GLInterface::FrameCapture{};
+			gState.mTitleSeen = true;
+			Goto(Step::Loading);
+		}
 		if (theApp->mTitleScreen)
 			theApp->LoadingCompleted();
 		if (gState.mTicks < 50)
@@ -699,10 +745,11 @@ void Update(LawnApp* theApp)
 			aGL->mCapture.mRequested = true;
 		else if (gState.mTicks > 200 && aGL->mCapture.mDone)
 		{
-			CheckFramed(aGL->mCapture, "the main menu");
+			CheckFramed(theApp, aGL->mCapture, "the main menu", Framed::MenuScene);
 			SaveWindow(aGL->mCapture, "main menu");
 			aGL->mCapture = GLInterface::FrameCapture{};
-			Goto(Step::NextLevel);
+			gState.mScreen = 0;
+			Goto(Step::Screens);
 		}
 		else if (gState.mTicks > 1000)
 		{
@@ -710,6 +757,59 @@ void Update(LawnApp* theApp)
 			Goto(Step::NextLevel);
 		}
 		break;
+
+	case Step::Screens:
+	{
+		// other screens outside the levels, framed: the almanac, the store, the mini-games
+		static const char* const NAMES[] = { "almanac", "store", "mini-games" };
+		if (gState.mScreen >= 3)
+		{
+			Goto(Step::NextLevel);
+			break;
+		}
+		if (gState.mTicks == 1)
+		{
+			Log("");
+			Log("{}", NAMES[gState.mScreen]);
+			if (gState.mScreen == 0)
+				theApp->DoAlmanacDialog();
+			else if (gState.mScreen == 1)
+				theApp->ShowStoreScreen();
+			else
+			{
+				theApp->KillGameSelector();	// as the main menu does when the mini-games are picked
+				theApp->ShowChallengeScreen(ChallengePage::CHALLENGE_PAGE_CHALLENGE);
+			}
+		}
+		else if (gState.mTicks == 200)
+		{
+			aGL->mCapture = GLInterface::FrameCapture{};
+			aGL->mCapture.mRequested = true;
+		}
+		else if (gState.mTicks > 200 && (aGL->mCapture.mDone || gState.mTicks > 1000))
+		{
+			if (aGL->mCapture.mDone)
+			{
+				CheckFramed(theApp, aGL->mCapture, std::format("the {}", NAMES[gState.mScreen]), gState.mScreen == 1 ? Framed::Mirrored : Framed::Page);
+				SaveWindow(aGL->mCapture, NAMES[gState.mScreen]);
+			}
+			else
+				Check(false, std::format("the {} was captured", NAMES[gState.mScreen]));
+			aGL->mCapture = GLInterface::FrameCapture{};
+			if (gState.mScreen == 0)
+				theApp->KillAlmanacDialog();
+			else if (gState.mScreen == 1)
+				theApp->KillStoreScreen();
+			else
+			{
+				theApp->KillChallengeScreen();
+				theApp->ShowGameSelector();
+			}
+			gState.mScreen++;
+			Goto(Step::Screens);
+		}
+		break;
+	}
 
 	case Step::NextLevel:
 		gFastMo = false;
@@ -764,7 +864,7 @@ void Update(LawnApp* theApp)
 			gFastMo = true;
 			if (aGL->mCapture.mDone)
 			{
-				CheckFramed(aGL->mCapture, "the seed chooser");
+				CheckFramed(theApp, aGL->mCapture, "the seed chooser", Framed::Backdrop);
 				SaveWindow(aGL->mCapture, gState.mLevels[gState.mLevel - 1].mName + " seed chooser");
 				aGL->mCapture = GLInterface::FrameCapture{};
 			}
@@ -989,7 +1089,7 @@ void Update(LawnApp* theApp)
 		{
 			if (aGL->mCapture.mDone)
 			{
-				CheckFramed(aGL->mCapture, "the menu");
+				CheckFramed(theApp, aGL->mCapture, "the menu", Framed::Backdrop);
 				SaveWindow(aGL->mCapture, gState.mLevels[gState.mLevel - 1].mName + " menu");
 			}
 			aGL->mCapture = GLInterface::FrameCapture{};

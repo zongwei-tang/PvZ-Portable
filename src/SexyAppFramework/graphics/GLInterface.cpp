@@ -25,6 +25,8 @@
 #include <SDL3/SDL.h>
 
 #include "graphics/GLInterface.h"
+#include <array>
+#include <list>
 #include "graphics/GLImage.h"
 #include "graphics/Graphics.h"
 #include "graphics/MemoryImage.h"
@@ -2077,6 +2079,29 @@ void GLInterface::DrawTriangleTex(const TriVertex &p1, const TriVertex &p2, cons
 	DrawTrianglesTex(arr, 1, theColor, theDrawMode, theTexture, blend);
 }
 
+// Triangles through the transform being drawn with, if any (the overlay of the phone layout draws with one): the
+// vertices moved, offset and all, into a copy
+static const TriVertex (*TransformedTriangles(const std::list<SexyMatrix3>& theStack, const TriVertex theVertices[][3], int theNumTriangles, float& tx, float& ty,
+	std::vector<std::array<TriVertex, 3>>& theCopy))[3]
+{
+	if (theStack.empty())
+		return theVertices;
+	theCopy.resize(theNumTriangles);
+	for (int i = 0; i < theNumTriangles; i++)
+	{
+		for (int j = 0; j < 3; j++)
+		{
+			TriVertex v = theVertices[i][j];
+			SexyVector2 p = theStack.back() * SexyVector2(v.x + tx, v.y + ty);
+			v.x = p.x;
+			v.y = p.y;
+			theCopy[i][j] = v;
+		}
+	}
+	tx = ty = 0;
+	return reinterpret_cast<const TriVertex (*)[3]>(theCopy.data());
+}
+
 void GLInterface::DrawTrianglesTex(const TriVertex theVertices[][3], int theNumTriangles,
 	const Color &theColor, int theDrawMode, Image *theTexture, float tx, float ty, bool blend)
 {
@@ -2090,7 +2115,8 @@ void GLInterface::DrawTrianglesTex(const TriVertex theVertices[][3], int theNumT
 
 	uint32_t c = theColor.ToGLColor();
 	bool clampUv = (mem->mRenderFlags & RenderImageFlag_Repeat) == 0;
-	mem->mRenderData->BltTriangles(theVertices, theNumTriangles, c, tx, ty, clampUv);
+	std::vector<std::array<TriVertex, 3>> aCopy;
+	mem->mRenderData->BltTriangles(TransformedTriangles(mTransformStack, theVertices, theNumTriangles, tx, ty, aCopy), theNumTriangles, c, tx, ty, clampUv);
 }
 
 void GLInterface::DrawTrianglesTexMixed(const TriVertex theVertices[][3], int theNumTriangles,
@@ -2107,7 +2133,8 @@ void GLInterface::DrawTrianglesTexMixed(const TriVertex theVertices[][3], int th
 
 	uint32_t c = theColor.ToGLColor();
 	bool clampUv = (mem->mRenderFlags & RenderImageFlag_Repeat) == 0;
-	mem->mRenderData->BltTriangles(theVertices, theNumTriangles, c, tx, ty, clampUv, theDrawModes);
+	std::vector<std::array<TriVertex, 3>> aCopy;
+	mem->mRenderData->BltTriangles(TransformedTriangles(mTransformStack, theVertices, theNumTriangles, tx, ty, aCopy), theNumTriangles, c, tx, ty, clampUv, theDrawModes);
 
 	SetMixedBlendMode(false);
 	SetBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);

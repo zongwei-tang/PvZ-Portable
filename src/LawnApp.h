@@ -168,6 +168,7 @@ public:
 	bool							mPhoneLayout = true;
 	bool							PhoneLayoutApplies();
 	bool							PhoneScreen();					// a phone with the option on (or PVZP_PHONE_LAYOUT=1)
+	MemoryImage*					PhoneBackdrop();
 	// how the frame is shown: letterboxed as everywhere, in the phone layout of a level, or framed (PhoneLayout.h)
 	enum class PhonePresentation { None, Level, Framed };
 	PhonePresentation				mPhonePresentation = PhonePresentation::None;
