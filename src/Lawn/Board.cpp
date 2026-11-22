@@ -4382,7 +4382,26 @@ void Board::PickUpTool(GameObjectType theObjectType)
 	mCursorObject->mType = SeedType::SEED_NONE;
 }
 
+// On a phone, something picked up by a press (a plant, the shovel, the cob cannon's target) and the finger let go
+// elsewhere: the release puts it there, as a second tap would (the phone versions plant by dragging)
+static bool gPhonePickedUp = false;
+static int gPhonePickX = 0, gPhonePickY = 0;
+constexpr int PHONE_DRAG_DISTANCE = 30;
+
 void Board::MouseDown(int x, int y, int theClickCount)
+{
+	CursorType aCursorBefore = mCursorObject->mCursorType;
+	gPhonePickedUp = false;
+	MouseDownPress(x, y, theClickCount);
+	if (mApp->PhoneScreen() && theClickCount > 0 && aCursorBefore == CursorType::CURSOR_TYPE_NORMAL && mCursorObject->mCursorType != CursorType::CURSOR_TYPE_NORMAL)
+	{
+		gPhonePickedUp = true;
+		gPhonePickX = x;
+		gPhonePickY = y;
+	}
+}
+
+void Board::MouseDownPress(int x, int y, int theClickCount)
 {
 	UpdateMousePosition();
 	Widget::MouseDown(x, y, theClickCount);
@@ -4615,6 +4634,17 @@ bool Board::CanInteractWithBoardButtons()
 void Board::MouseUp(int x, int y, int theClickCount)
 {
 	Widget::MouseUp(x, y, theClickCount);
+	if (gPhonePickedUp && theClickCount > 0)
+	{
+		gPhonePickedUp = false;
+		int dx = x - gPhonePickX, dy = y - gPhonePickY;
+		if (mCursorObject->mCursorType != CursorType::CURSOR_TYPE_NORMAL && dx * dx + dy * dy > PHONE_DRAG_DISTANCE * PHONE_DRAG_DISTANCE)
+		{
+			MouseDownPress(x, y, 1);	// dragged there: put down where the finger lets go
+			mIgnoreMouseUp = false;
+			return;
+		}
+	}
 	if (mIgnoreMouseUp)
 	{
 		mIgnoreMouseUp = false;
@@ -5805,7 +5835,8 @@ void Board::Update()
 				mShakeAmountX = -mShakeAmountX;
 			}
 			mX = PvzpAnimateCurve(12, 0, mShakeCounter, 0, mShakeAmountX, PvzpCurves::CURVE_BOUNCE);
-			mY = PvzpAnimateCurve(12, 0, mShakeCounter, 0, mShakeAmountY, PvzpCurves::CURVE_BOUNCE);
+			// (only sideways in the phone layout, where the screen is as tall as the window: nothing to show above or below it)
+			mY = mApp->PhoneLayoutMovesBank() ? 0 : PvzpAnimateCurve(12, 0, mShakeCounter, 0, mShakeAmountY, PvzpCurves::CURVE_BOUNCE);
 		}
 	}
 	if (mCoinBankFadeCount > 0 && mApp->GetDialog(Dialogs::DIALOG_PURCHASE_PACKET_SLOT) == nullptr)
@@ -7480,7 +7511,7 @@ void Board::DrawUITop(Graphics* g)
 		mAdvice->Draw(g);
 	}
 
-	if (mTimeStopCounter == 0 && mCursorObject->BeginDraw(g))
+	if (mTimeStopCounter == 0 && !mApp->PhoneLayoutMovesCursor() && mCursorObject->BeginDraw(g))	// (else over the whole window)
 	{
 		mCursorObject->Draw(g);
 		mCursorObject->EndDraw(g);

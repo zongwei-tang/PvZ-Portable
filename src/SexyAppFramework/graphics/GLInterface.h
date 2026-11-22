@@ -196,6 +196,9 @@ struct PresentationTile
 	bool					mTapThrough = false;
 	// an image drawn mirrored left to right
 	bool					mMirror = false;
+	// for a pointer moving over it (a drag): what is under it gets it, and under nothing it goes on in the logical
+	// screen's tile, past its edge (so that what is dragged follows the finger)
+	bool					mDragThrough = false;
 };
 
 class GLInterface : public NativeDisplay
@@ -255,14 +258,15 @@ public:
 
 	// Tiled presentation: with tiles, a frame is drawn into a texture of the logical screen, and Flush() shows the tiles
 	// of it in the window instead of the letterboxed screen (the phone layout of a level, or the screen framed over a
-	// blurred copy of itself). New tiles take effect with the
-	// next frame; none goes back to the letterboxed screen. Tiles are drawn in their order. MapWindowToLogical maps a
-	// window point through the topmost tile of the logical screen under it: false without tiles, and a point under none
-	// maps far outside the logical screen.
+	// blurred copy of itself). New tiles take effect at once while it stays tiled (so that the frame drawn next shows
+	// them with the game as it is now), else with the next frame; none goes back to the letterboxed screen. Tiles are
+	// drawn in their order. MapWindowToLogical maps a window point through the topmost tile of the logical screen under
+	// it: false without tiles, and a point under none maps far outside the logical screen (for a moving pointer, past
+	// tiles marked mDragThrough, on in the logical screen's tile past its edge).
 	void					SetPresentationTiles(std::vector<PresentationTile> theTiles);
 	// draws an overlay tile into the window, in window points, after the tiles before it
 	std::function<void(const PresentationTile&)> mDrawOverlay;
-	bool					MapWindowToLogical(double& theX, double& theY) const;
+	bool					MapWindowToLogical(double& theX, double& theY, bool theMoving = false) const;
 	bool					IsTiled() const { return !mTiles.empty(); }
 	const std::vector<PresentationTile>& GetPresentationTiles() const { return mTiles; }
 

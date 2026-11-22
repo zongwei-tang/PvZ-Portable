@@ -1439,11 +1439,25 @@ void GLInterface::Flush()
 
 void GLInterface::SetPresentationTiles(std::vector<PresentationTile> theTiles)
 {
+	if (!mTiles.empty() && !theTiles.empty())
+	{
+		// tiled now and still: at once (the game is updated before it draws), so that the frame drawn next puts its
+		// pieces where the game is now; a pan otherwise shows the backdrop beside the screen a frame behind it
+		int aWidth = mTileTextureWidth, aHeight = mTileTextureHeight;
+		mTiles = std::move(theTiles);
+		mPendingTiles.clear();
+		mTilesPending = false;
+		if (!EnsureTileTarget())
+			mTiles.clear();
+		if (mTiles.empty() || aWidth != mTileTextureWidth || aHeight != mTileTextureHeight)
+			BindFrameTarget(true);
+		return;
+	}
 	mPendingTiles = std::move(theTiles);
 	mTilesPending = true;
 }
 
-bool GLInterface::MapWindowToLogical(double& theX, double& theY) const
+bool GLInterface::MapWindowToLogical(double& theX, double& theY, bool theMoving) const
 {
 	if (mTiles.empty())
 		return false;
@@ -1451,7 +1465,7 @@ bool GLInterface::MapWindowToLogical(double& theX, double& theY) const
 	{
 		const PresentationTile& aTile = *anItr;
 		const FRect& d = aTile.mDest;
-		if (aTile.mImage != nullptr || aTile.mBlur || aTile.mTapThrough)
+		if (aTile.mImage != nullptr || aTile.mBlur || aTile.mTapThrough || (theMoving && aTile.mDragThrough))
 			continue;
 		if (aTile.mNoTap && theX >= d.mX && theX < d.mX + d.mWidth && theY >= d.mY && theY < d.mY + d.mHeight)
 			break;	// it takes the tap, and nothing under it gets it
@@ -1460,6 +1474,18 @@ bool GLInterface::MapWindowToLogical(double& theX, double& theY) const
 		theX = aTile.mSource.mX + (theX - d.mX) * aTile.mSource.mWidth / d.mWidth;
 		theY = aTile.mSource.mY + (theY - d.mY) * aTile.mSource.mHeight / d.mHeight;
 		return true;
+	}
+	if (theMoving)
+	{
+		// a moving pointer under no tile: on in the logical screen's tile, past its edge
+		for (const PresentationTile& aTile : mTiles)
+		{
+			if (aTile.mImage != nullptr || aTile.mBlur || aTile.mOverlay != 0 || aTile.mDest.mWidth <= 0 || aTile.mDest.mHeight <= 0)
+				continue;
+			theX = aTile.mSource.mX + (theX - aTile.mDest.mX) * aTile.mSource.mWidth / aTile.mDest.mWidth;
+			theY = aTile.mSource.mY + (theY - aTile.mDest.mY) * aTile.mSource.mHeight / aTile.mDest.mHeight;
+			return true;
+		}
 	}
 	theX = -10000;	// under no tile: off the logical screen, where nothing takes a click
 	theY = -10000;

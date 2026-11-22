@@ -1400,7 +1400,7 @@ bool LawnApp::PhoneLayoutApplies()
 		mGameMode == GameMode::GAMEMODE_CHALLENGE_BEGHOULED_TWIST)
 		return (mPhoneLayoutOff = "level of its own", false);
 	// the bank where a level keeps it, and the board not panned (as in cutscenes)
-	if (mBoard->mX != 0 || mBoard->mY != 0)
+	if ((mBoard->mX != 0 || mBoard->mY != 0) && mBoard->mShakeCounter == 0)	// (shaken by an explosion: still in the layout)
 		return (mPhoneLayoutOff = "board moved", false);
 	if (mBoard->mSeedBank->mY != 0)
 		return (mPhoneLayoutOff = "bank moved", false);
@@ -1437,6 +1437,11 @@ bool LawnApp::PhoneLayoutMovesBank()
 bool LawnApp::PhoneLayoutMovesShovel()
 {
 	return PhoneLayoutDraws(this, PhoneLayout::Kind::Shovel);
+}
+
+bool LawnApp::PhoneLayoutMovesCursor()
+{
+	return PhoneLayoutDraws(this, PhoneLayout::Kind::Cursor);
 }
 
 // The backdrop image of the level being played, which the board draws BOARD_OFFSET left of its left edge: the house left
@@ -1584,8 +1589,55 @@ void LawnApp::UpdatePhoneLayout()
 				aPiece.mOverlayIndex = aTile.mIndex;
 				aPiece.mNoTap = aTile.TakesNoTap();
 				aPiece.mTapThrough = !aTile.TakesTaps();
+				// (a finger dragging something passes over the cards and the board to the lawn's place there)
+				aPiece.mDragThrough = aTile.mKind == PhoneLayout::Kind::Card || aTile.TakesNoTap();
 			}
 			aTiles.push_back(aPiece);
+		}
+		if (mBoard->mShakeCounter > 0 && (mBoard->mX != 0 || mBoard->mY != 0))
+		{
+			// the board shaken (an explosion), which the game draws moved in its screen: the house and the street beside it
+			// moved alike, and the screen cut to where the board is in it (so that no edge of it shows bare); the cards and
+			// the bar stay where they are
+			for (PresentationTile& aPiece : aTiles)
+			{
+				if (aPiece.mImage != nullptr || aPiece.mOverlay != 0 || aPiece.mBlur)
+					continue;
+				double aScale = aPiece.mDest.mWidth / aPiece.mSource.mWidth;
+				double aLeft = std::max(aPiece.mSource.mX, aPiece.mSource.mX + mBoard->mX), aTop = std::max(aPiece.mSource.mY, aPiece.mSource.mY + mBoard->mY);
+				double aRight = std::min(aPiece.mSource.mX + aPiece.mSource.mWidth, aPiece.mSource.mX + aPiece.mSource.mWidth + mBoard->mX);
+				double aBottom = std::min(aPiece.mSource.mY + aPiece.mSource.mHeight, aPiece.mSource.mY + aPiece.mSource.mHeight + mBoard->mY);
+				aPiece.mDest = FRect(aPiece.mDest.mX + (aLeft - aPiece.mSource.mX) * aScale, aPiece.mDest.mY + (aTop - aPiece.mSource.mY) * aScale,
+					(aRight - aLeft) * aScale, (aBottom - aTop) * aScale);
+				aPiece.mSource = FRect(aLeft, aTop, aRight - aLeft, aBottom - aTop);
+				double aScreenLeft = aPiece.mDest.mX, aScreenRight = aPiece.mDest.mX + aPiece.mDest.mWidth;
+				for (PresentationTile& anImage : aTiles)
+				{
+					if (anImage.mImage == nullptr)
+						continue;
+					anImage.mDest.mX += mBoard->mX * aScale;
+					anImage.mDest.mY += mBoard->mY * aScale;
+					// the piece beside the screen on to it, under where the board has nothing in the screen (its own
+					// picture is the same there)
+					double aImageScale = anImage.mDest.mWidth / anImage.mSource.mWidth;
+					if (anImage.mDest.mX > aScreenRight - 1 && anImage.mDest.mX > aScreenRight)
+					{
+						double aMore = std::min((anImage.mDest.mX - aScreenRight) / aImageScale, static_cast<double>(anImage.mSource.mX));
+						anImage.mSource.mX -= aMore;
+						anImage.mSource.mWidth += aMore;
+						anImage.mDest.mX -= aMore * aImageScale;
+						anImage.mDest.mWidth += aMore * aImageScale;
+					}
+					double anImageRight = anImage.mDest.mX + anImage.mDest.mWidth;
+					if (anImageRight < aScreenLeft + 1 && anImageRight < aScreenLeft)
+					{
+						double aMore = std::min((aScreenLeft - anImageRight) / aImageScale, anImage.mImage->mWidth - anImage.mSource.mX - anImage.mSource.mWidth);
+						anImage.mSource.mWidth += aMore;
+						anImage.mDest.mWidth += aMore * aImageScale;
+					}
+				}
+				break;
+			}
 		}
 		if (!mGLInterface->mDrawOverlay)
 			mGLInterface->mDrawOverlay = [this](const PresentationTile& theTile) { PhoneLayoutDraw::Overlay(this, theTile); };
@@ -1639,6 +1691,7 @@ void LawnApp::UpdatePhoneLayout()
 			PresentationTile aPiece = ToPresentation(aTile);
 			aPiece.mNoTap = aTile.TakesNoTap();
 			aPiece.mTapThrough = !aTile.TakesTaps();
+			aPiece.mDragThrough = aTile.TakesNoTap();
 			if (aTile.Overlay())
 			{
 				aPiece.mOverlay = static_cast<int>(aTile.mKind);

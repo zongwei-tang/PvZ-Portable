@@ -413,7 +413,7 @@ static void RecordDemoEvent(SexyAppBase* theApp, const SDL_Event& theEvent)
 		{
 			int x = static_cast<int>((theEvent.type == SDL_EVENT_MOUSE_MOTION) ? theEvent.motion.x : theEvent.button.x);
 			int y = static_cast<int>((theEvent.type == SDL_EVENT_MOUSE_MOTION) ? theEvent.motion.y : theEvent.button.y);
-			theApp->mWidgetManager->RemapMouse(x, y);
+			theApp->mWidgetManager->RemapMouse(x, y, theEvent.type == SDL_EVENT_MOUSE_MOTION);
 
 			RecordDemoMousePosition(theApp, x, y);
 
@@ -696,7 +696,7 @@ bool SexyAppBase::ProcessDeferredMessages(bool singleMessage)
 
 				int x = static_cast<int>(event.motion.x);
 				int y = static_cast<int>(event.motion.y);
-				mWidgetManager->RemapMouse(x, y);
+				mWidgetManager->RemapMouse(x, y, true);
 
 				mLastUserInputTick = mLastTimerTime;
 

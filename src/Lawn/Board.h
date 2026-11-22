@@ -282,6 +282,7 @@ public:
 	void							MouseMove(int x, int y) override;
 	void							MouseDrag(int x, int y) override;
 	void							MouseDown(int x, int y, int theClickCount) override;
+	void							MouseDownPress(int x, int y, int theClickCount);	// what a press does (MouseDown, or a release that drops what was dragged)
 	void							MouseUp(int x, int y, int theClickCount) override;
 	void							KeyChar(char theChar) override;
 	void							KeyUp(KeyCode) override {}

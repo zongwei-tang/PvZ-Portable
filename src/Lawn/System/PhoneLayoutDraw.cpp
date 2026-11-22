@@ -11,6 +11,7 @@
 #include "Lawn/Board.h"
 #include "Lawn/Challenge.h"
 #include "Lawn/Cutscene.h"
+#include "Lawn/CursorObject.h"
 #include "Lawn/SeedPacket.h"
 #include "Lawn/Zombie.h"
 #include "Lawn/LawnMower.h"
@@ -1521,6 +1522,7 @@ void Overlay(LawnApp* theApp, const PresentationTile& theTile)
 	case PhoneLayout::Kind::StoreFront:
 	case PhoneLayout::Kind::Edge:
 	case PhoneLayout::Kind::Board:
+	case PhoneLayout::Kind::Cursor:
 		break;	// in window points, clipped to the tile; the sceneries and what is beyond set up their own transforms
 	case PhoneLayout::Kind::Meter:
 	case PhoneLayout::Kind::Menu:
@@ -1533,7 +1535,8 @@ void Overlay(LawnApp* theApp, const PresentationTile& theTile)
 		return;
 	}
 	if (aKind != PhoneLayout::Kind::Weather && aKind != PhoneLayout::Kind::Surround && aKind != PhoneLayout::Kind::Beyond && aKind != PhoneLayout::Kind::Band &&
-		aKind != PhoneLayout::Kind::Title && aKind != PhoneLayout::Kind::StoreFront && aKind != PhoneLayout::Kind::Edge && aKind != PhoneLayout::Kind::Board)
+		aKind != PhoneLayout::Kind::Title && aKind != PhoneLayout::Kind::StoreFront && aKind != PhoneLayout::Kind::Edge && aKind != PhoneLayout::Kind::Board &&
+		aKind != PhoneLayout::Kind::Cursor)
 		aTransform.Translate(static_cast<float>(theTile.mDest.mX), static_cast<float>(theTile.mDest.mY));
 
 	Graphics g(theApp->mWidgetManager->mImage);
@@ -1630,6 +1633,24 @@ void Overlay(LawnApp* theApp, const PresentationTile& theTile)
 		break;
 	case PhoneLayout::Kind::Board:
 		DrawBoard(&g, theApp, theTile);
+		break;
+	case PhoneLayout::Kind::Cursor:
+		// what the player holds, in the board's coordinates (the game's screen's, moved with the board), past the
+		// screen's edges too
+		if (aBoard->mCursorObject && aBoard->mTimeStopCounter == 0)
+		{
+			SexyTransform2D aFromBoard = ToWindow(theTile);
+			SexyTransform2D aShift;
+			aShift.Translate(static_cast<float>(aBoard->mX), static_cast<float>(aBoard->mY));
+			theApp->mGLInterface->PushTransform(aFromBoard * aShift, false);
+			Graphics aCursorG(g);
+			if (aBoard->mCursorObject->BeginDraw(&aCursorG))
+			{
+				aBoard->mCursorObject->Draw(&aCursorG);
+				aBoard->mCursorObject->EndDraw(&aCursorG);
+			}
+			theApp->mGLInterface->PopTransform();
+		}
 		break;
 	case PhoneLayout::Kind::Conveyor:
 	{

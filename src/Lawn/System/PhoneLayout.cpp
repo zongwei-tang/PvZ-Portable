@@ -290,6 +290,7 @@ std::vector<Tile> Compute(const Input& theInput)
 		aTiles.push_back(Tile{ theInput.mPackets[i], Box{ aCardX, aY, CARD_WIDTH * aCardScale, CARD_HEIGHT * aCardScale }, Kind::Card,
 			static_cast<int>(i) });
 	}
+	aTiles.push_back(Tile{ aLawn, InPlace(aLawn).mDest, Kind::Cursor });
 	return aTiles;
 }
 

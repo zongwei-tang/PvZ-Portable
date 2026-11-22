@@ -214,13 +214,14 @@ void WidgetManager::DoMouseUps(Widget* theWidget, ulong theDownCode)
 	}
 }
 
-void WidgetManager::RemapMouse(int& theX, int& theY)
+void WidgetManager::RemapMouse(int& theX, int& theY, bool theMoving)
 {
-	// tiled presentation (the phone layout of a level): through the tile under the point
+	// tiled presentation (the phone layout of a level): through the tile under the point (a moving one past the cards,
+	// see GLInterface::MapWindowToLogical)
 	if (mApp != nullptr && mApp->mGLInterface)
 	{
 		double aX = theX, aY = theY;
-		if (mApp->mGLInterface->MapWindowToLogical(aX, aY))
+		if (mApp->mGLInterface->MapWindowToLogical(aX, aY, theMoving))
 		{
 			theX = static_cast<int>(std::floor(aX));
 			theY = static_cast<int>(std::floor(aY));

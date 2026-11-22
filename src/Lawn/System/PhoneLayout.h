@@ -68,6 +68,8 @@ enum class Kind
 				// level's own picture ends short of the window's edge; mIndex 1: one down the right edge, its rim on its
 				// left (beside a garden, whose picture ends at the screen's edges); mIndex 2: plain black, left of the board
 				// under the notch or the Dynamic Island; it takes taps and does nothing with them
+	Cursor,		// what the player holds (a plant, the shovel, the cob cannon's target), over everything, in the game's screen's
+				// coordinates (where mDest is, mSource of it) past its edges too, following the finger; taps go to what is under it
 };
 
 // Where something goes in the window (mDest, in window points), and what of the game it shows or stands for (mSource,
@@ -83,7 +85,7 @@ struct Tile
 	bool	TakesTaps() const
 	{
 		return mKind != Kind::Backdrop && mKind != Kind::Weather && mKind != Kind::Blur && mKind != Kind::Surround && mKind != Kind::Beyond &&
-			mKind != Kind::Band && mKind != Kind::Title && mKind != Kind::StoreFront && mKind != Kind::Edge;
+			mKind != Kind::Band && mKind != Kind::Title && mKind != Kind::StoreFront && mKind != Kind::Edge && mKind != Kind::Cursor;
 	}
 	bool	TakesNoTap() const { return mKind == Kind::SunCounter || mKind == Kind::Meter || mKind == Kind::Conveyor || mKind == Kind::Board; }
 };
@@ -156,7 +158,7 @@ constexpr double	HOUSE_WIDTH = 220;			// the backdrop's part left of the game's 
 // on, darkening: Edge), the game's screen, the weather over the backdrop, the board the cards lie on (from the window's
 // left edge past the cards, and past where the level's own picture ends on the left: the backdrop's image, or the game's
 // screen without one), the shovel, the menu button, the
-// progress meter, the sun counter, the conveyor belt, the cards. Empty when the screen is not wide enough for the layout
+// progress meter, the sun counter, the conveyor belt, the cards, what the player holds. Empty when the screen is not wide enough for the layout
 // to gain anything; the game then shows its 800x600 screen as usual.
 std::vector<Tile>	Compute(const Input& theInput);
 

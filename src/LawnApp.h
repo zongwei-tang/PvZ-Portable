@@ -180,6 +180,7 @@ public:
 	// progress meter and the menu button where it puts them: the game does not draw them in its screen
 	bool							PhoneLayoutMovesBank();
 	bool							PhoneLayoutMovesShovel();
+	bool							PhoneLayoutMovesCursor();	// what the player holds, drawn over the whole window
 	bool							PhoneLayoutMovesMeter();
 	bool							PhoneLayoutMovesMenu();
 	void							DoUserDialog();

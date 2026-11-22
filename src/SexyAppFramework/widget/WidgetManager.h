@@ -133,7 +133,7 @@ public:
 	void					RemovePopupCommandWidget();
 	void					MousePosition(int x, int y);
 	void					RehupMouse();
-	void					RemapMouse(int& theX, int& theY);
+	void					RemapMouse(int& theX, int& theY, bool theMoving = false);
 	bool					MouseUp(int x, int y, int theClickCount);
 	bool					MouseDown(int x, int y, int theClickCount);
 	bool					MouseMove(int x, int y);

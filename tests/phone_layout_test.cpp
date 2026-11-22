@@ -84,7 +84,7 @@ Input GameInput(double theScreenWidth, double theScreenHeight, Box theSafe, int 
 int TopmostAt(const std::vector<Tile>& theTiles, double theX, double theY)
 {
 	for (int i = static_cast<int>(theTiles.size()) - 1; i >= 0; i--)
-		if (theTiles[i].mKind != Kind::Backdrop && theTiles[i].mDest.Contains(theX, theY))
+		if (theTiles[i].mKind != Kind::Backdrop && theTiles[i].mKind != Kind::Cursor && theTiles[i].mDest.Contains(theX, theY))
 			return i;
 	return -1;
 }
@@ -151,6 +151,12 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 				aWhich + " (a board right of the screen) reaches from it to the window's right edge, all its height");
 			continue;
 		}
+		if (aTile.mKind == Kind::Cursor)
+		{
+			// what the player holds: over the game's screen, last, taking no taps
+			Check(i + 1 == aTiles.size() && Same(aTile.mDest, aRight.mDest) && Same(aTile.mSource, theInput.mLawn), aWhich + " (what the player holds) is last, in the game's screen's place");
+			continue;
+		}
 		if (aTile.mKind == Kind::Board && aTile.mIndex == 2)
 		{
 			// black under the notch, left of the board
@@ -195,7 +201,7 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 			// overlap one another, and are on top where they are
 			Check(aTile.mDest.mY >= aSafe.mY - EPSILON, aWhich + " (a control) is below the top of the safe area");
 			for (size_t j = i + 1; j < aTiles.size(); j++)
-				Check(!Overlap(aTile.mDest, aTiles[j].mDest), aWhich + " does not overlap tile " + std::to_string(j));
+				Check(aTiles[j].mKind == Kind::Cursor || !Overlap(aTile.mDest, aTiles[j].mDest), aWhich + " does not overlap tile " + std::to_string(j));
 		}
 
 		// a tap anywhere in it: to the same place of the game's screen (for a card, of its packet), or to nothing for the

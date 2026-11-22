@@ -22,6 +22,7 @@
 #include "Lawn/Widget/SeedChooserScreen.h"
 #include "Lawn/Widget/TitleScreen.h"
 #include "widget/HyperlinkWidget.h"
+#include "widget/WidgetManager.h"
 #include "Lawn/Widget/GameSelector.h"
 #include "Lawn/Widget/ZombatarWidget.h"
 #include "graphics/GLInterface.h"
@@ -78,6 +79,8 @@ struct State
 	bool					mSuppress = false;
 	int						mPacket = -1, mCol = -1, mRow = -1;
 	int						mChooserTicks = 0;	// the seed chooser up
+	double					mHoldX = 0, mHoldY = 0;	// where the finger holds the plant picked, in window points
+	bool					mDragged = false;	// the card dragged to the lawn (not tapped, then the lawn)
 	int						mScreen = 0;		// of the screens outside the levels
 	bool					mTitleSeen = false;
 	Plant*					mPlant = nullptr;
@@ -234,7 +237,7 @@ void CheckPicture(LawnApp* theApp, const GLInterface::FrameCapture& theRef, cons
 	{
 		const PresentationTile& t = aTiles[i];
 		Log("  tile {}{}: ({:.1f},{:.1f} {:.1f}x{:.1f}) -> window ({:.1f},{:.1f} {:.1f}x{:.1f}), x{:.3f}", i,
-			t.mImage ? " (backdrop image)" : t.mOverlay == 2 ? " (card)" : t.mOverlay == 3 ? " (sun counter)" : t.mOverlay == 4 ? " (progress meter)" : t.mOverlay == 5 ? " (menu button)" : t.mOverlay == 6 ? " (shovel)" : t.mOverlay == 7 ? " (conveyor belt)" : t.mOverlay == 8 ? " (weather)" : t.mOverlay == 10 ? " (surroundings)" : t.mOverlay == 11 ? " (beyond the screen)" : t.mOverlay == 12 ? " (band)" : t.mOverlay == 13 ? " (title)" : t.mOverlay == 14 ? " (store front)" : t.mOverlay == 15 ? " (backdrop's edge)" : t.mOverlay == 16 ? (t.mOverlayIndex == 2 ? " (black under the notch)" : " (cards' board)") : t.mBlur ? " (blurred)" : "",
+			t.mImage ? " (backdrop image)" : t.mOverlay == 2 ? " (card)" : t.mOverlay == 3 ? " (sun counter)" : t.mOverlay == 4 ? " (progress meter)" : t.mOverlay == 5 ? " (menu button)" : t.mOverlay == 6 ? " (shovel)" : t.mOverlay == 7 ? " (conveyor belt)" : t.mOverlay == 8 ? " (weather)" : t.mOverlay == 10 ? " (surroundings)" : t.mOverlay == 11 ? " (beyond the screen)" : t.mOverlay == 12 ? " (band)" : t.mOverlay == 13 ? " (title)" : t.mOverlay == 14 ? " (store front)" : t.mOverlay == 15 ? " (backdrop's edge)" : t.mOverlay == 16 ? (t.mOverlayIndex == 2 ? " (black under the notch)" : " (cards' board)") : t.mOverlay == 17 ? " (what the player holds)" : t.mBlur ? " (blurred)" : "",
 			t.mSource.mX, t.mSource.mY, t.mSource.mWidth, t.mSource.mHeight, t.mDest.mX, t.mDest.mY, t.mDest.mWidth,
 			t.mDest.mHeight, t.mDest.mWidth / t.mSource.mWidth);
 	}
@@ -590,6 +593,46 @@ bool TapLogical(LawnApp* theApp, double theX, double theY, const std::string& th
 	theApp->mGLInterface->MapWindowToLogical(aBackX, aBackY);
 	Log("  tap {} at window ({:.1f},{:.1f}), which maps back to logical ({:.1f},{:.1f})", theWhat, wx, wy, aBackX, aBackY);
 	Tap(theApp, wx, wy);
+	return true;
+}
+
+// a finger pressed at a logical point, moved over the house and let go at another (as dragging a card to the lawn)
+bool DragLogical(LawnApp* theApp, double theFromX, double theFromY, double theToX, double theToY, double theOverX, const std::string& theWhat)
+{
+	double ax = 0, ay = 0, bx = 0, by = 0;
+	bool aShown = ToWindow(theApp, theFromX, theFromY, ax, ay) && ToWindow(theApp, theToX, theToY, bx, by);
+	Check(aShown, theWhat + " is on screen");
+	if (!aShown)
+		return false;
+	Log("  drag {} from window ({:.1f},{:.1f}) over ({:.1f},{:.1f}) to ({:.1f},{:.1f})", theWhat, ax, ay, theOverX, (ay + by) / 2, bx, by);
+	SDL_WindowID anId = SDL_GetWindowID(theApp->mWindow.get());
+	auto Move = [&](double x, double y)
+	{
+		SDL_Event aMove{};
+		aMove.type = SDL_EVENT_MOUSE_MOTION;
+		aMove.motion.windowID = anId;
+		aMove.motion.x = static_cast<float>(x);
+		aMove.motion.y = static_cast<float>(y);
+		aMove.motion.state = SDL_BUTTON_LMASK;
+		SDL_PushEvent(&aMove);
+	};
+	auto Button = [&](double x, double y, bool theDown)
+	{
+		SDL_Event anEvent{};
+		anEvent.type = theDown ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+		anEvent.button.windowID = anId;
+		anEvent.button.button = SDL_BUTTON_LEFT;
+		anEvent.button.down = theDown;
+		anEvent.button.clicks = 1;
+		anEvent.button.x = static_cast<float>(x);
+		anEvent.button.y = static_cast<float>(y);
+		SDL_PushEvent(&anEvent);
+	};
+	Move(ax, ay);
+	Button(ax, ay, true);
+	Move(theOverX, (ay + by) / 2);
+	Move(bx, by);
+	Button(bx, by, false);
 	return true;
 }
 
@@ -981,6 +1024,21 @@ void Update(LawnApp* theApp)
 		gFastMo = true;
 		while (theApp->GetDialogCount() > 0 && !theApp->mDialogMap.empty())
 			theApp->KillDialog(theApp->mDialogMap.begin()->first);
+		if (static const bool aFilm = std::getenv("PVZP_SELFTEST_FILM") != nullptr; aFilm && aBoard && !(aBoard->mCutScene && aBoard->mCutScene->mSeedChoosing &&
+			gState.mChooserTicks > 200))
+		{
+			// a film of the opening (PVZP_SELFTEST_FILM): a picture every few ticks, at normal speed, until the seed
+			// chooser has been up a while
+			gFastMo = false;
+			static int gFrame = 0;
+			if (aGL->mCapture.mDone)
+			{
+				SaveWindow(aGL->mCapture, std::format("{} film {:03}", gState.mLevels[gState.mLevel - 1].mName, gFrame++));
+				aGL->mCapture = GLInterface::FrameCapture{};
+			}
+			else if (!aGL->mCapture.mRequested && gState.mTicks % 8 == 0)
+				aGL->mCapture.mRequested = true;
+		}
 		if (gState.mShow && aBoard && aBoard->mCutScene && aBoard->mCutScene->mSeedChoosing)
 		{
 			gFastMo = false;	// the player picks the seeds, and plays from here
@@ -1151,12 +1209,65 @@ void Update(LawnApp* theApp)
 		aPacket.mRefreshing = false;
 		Log("  packet {} ({} of {}), to plant at column {} row {}", gState.mPacket, static_cast<int>(aPacket.mPacketType), aBank.mNumPackets,
 			gState.mCol, gState.mRow);
-		TapLogical(theApp, aBank.mX + aPacket.mX + aPacket.mOffsetX + aPacket.mWidth / 2.0, aBank.mY + aPacket.mY + aPacket.mHeight / 2.0, "the packet");
+		// in one level the card dragged to the lawn and let go there (the phone versions plant so), elsewhere tapped and
+		// the lawn tapped
+		gState.mDragged = gState.mLevels[gState.mLevel - 1].mName == "survival day";
+		if (gState.mDragged)
+		{
+			double aOverX = 0;
+			for (const PresentationTile& t : aGL->GetPresentationTiles())
+				if (t.mOverlay == 0 && t.mImage == nullptr && !t.mBlur)
+					aOverX = t.mDest.mX - 20;	// over the house, just left of the lawn
+			DragLogical(theApp, aBank.mX + aPacket.mX + aPacket.mOffsetX + aPacket.mWidth / 2.0, aBank.mY + aPacket.mY + aPacket.mHeight / 2.0,
+				aBoard->GridToPixelX(gState.mCol, gState.mRow) + 40, aBoard->GridToPixelY(gState.mCol, gState.mRow) + 40, aOverX, "the card to the lawn");
+		}
+		else
+			TapLogical(theApp, aBank.mX + aPacket.mX + aPacket.mOffsetX + aPacket.mWidth / 2.0, aBank.mY + aPacket.mY + aPacket.mHeight / 2.0, "the packet");
 		Goto(Step::PlacePlant);
 		break;
 	}
 
 	case Step::PlacePlant:
+		if (gState.mDragged && gState.mTicks < 40)
+			break;	// dragged and let go on the lawn: planted already
+		if (gState.mTicks == 5)
+		{
+			// the finger, holding the plant, over the house between the cards' board and the lawn: the plant follows it
+			double aBoardRight = 0, aScreenLeft = 0;
+			for (const PresentationTile& t : aGL->GetPresentationTiles())
+			{
+				if (t.mOverlay == static_cast<int>(PhoneLayout::Kind::Board) && t.mOverlayIndex == 0)
+					aBoardRight = t.mDest.mX + t.mDest.mWidth;
+				else if (t.mOverlay == 0 && t.mImage == nullptr && !t.mBlur)
+					aScreenLeft = t.mDest.mX;
+			}
+			gState.mHoldX = (aBoardRight + aScreenLeft) / 2;
+			gState.mHoldY = aGL->mCapture.mPointHeight > 0 ? aGL->mCapture.mPointHeight / 2.0 : 180;
+			SDL_Event aMove{};
+			aMove.type = SDL_EVENT_MOUSE_MOTION;
+			aMove.motion.windowID = SDL_GetWindowID(theApp->mWindow.get());
+			aMove.motion.x = static_cast<float>(gState.mHoldX);
+			aMove.motion.y = static_cast<float>(gState.mHoldY);
+			SDL_PushEvent(&aMove);
+		}
+		else if (gState.mTicks == 10)
+		{
+			double x = gState.mHoldX, y = gState.mHoldY;
+			aGL->MapWindowToLogical(x, y, true);
+			Log("  the finger holding the plant at window ({:.1f},{:.1f}), logical ({:.1f},{:.1f}); the game has it at ({},{})", gState.mHoldX, gState.mHoldY, x, y,
+				theApp->mWidgetManager->mLastMouseX, theApp->mWidgetManager->mLastMouseY);
+			// (within a window point, which the events give whole, and the rounding down of the game's)
+			Check(x < 0 && std::abs(theApp->mWidgetManager->mLastMouseX - x) < 3 && std::abs(theApp->mWidgetManager->mLastMouseY - y) < 3,
+				"a finger holding a plant over the house: the game has it there, left of its screen (not at the card's packet, nor nowhere)");
+			Check(theApp->PhoneLayoutMovesCursor(), "what the player holds is drawn over the whole window");
+			aGL->mCapture = GLInterface::FrameCapture{};
+			aGL->mCapture.mRequested = true;
+		}
+		else if (gState.mTicks > 10 && gState.mTicks < 20 && aGL->mCapture.mDone)
+		{
+			SaveWindow(aGL->mCapture, gState.mLevels[gState.mLevel - 1].mName + " held");
+			aGL->mCapture = GLInterface::FrameCapture{};
+		}
 		if (gState.mTicks == 20)
 		{
 			const SeedPacket& aPacket = aBoard->mSeedBank->mSeedPackets[gState.mPacket];
@@ -1169,7 +1280,7 @@ void Update(LawnApp* theApp)
 			gState.mPlant = aBoard->GetTopPlantAt(gState.mCol, gState.mRow, PlantPriority::TOPPLANT_ANY);
 			if (gState.mPlant == gState.mPlantBefore)
 				gState.mPlant = nullptr;
-			Check(gState.mPlant != nullptr, "tapping the lawn planted it in the cell tapped");
+			Check(gState.mPlant != nullptr, gState.mDragged ? "dragging the card to the lawn and letting go planted it there" : "tapping the lawn planted it in the cell tapped");
 			if (gState.mPlant == nullptr)
 			{
 				for (int aRow = 0; aRow < 6; aRow++)
@@ -1250,8 +1361,22 @@ void Update(LawnApp* theApp)
 		break;
 
 	case Step::Watch:
-		// ten seconds of play, for the switches between tiled and letterboxed; near their end a second picture, with
-		// the progress meter shown (it shows from the first wave on) and the packet planted recharging
+		// ten seconds of play, for the switches between tiled and letterboxed; the board shaken as by an explosion, a
+		// picture in the middle of it; near their end a second picture, with the progress meter shown (it shows from the
+		// first wave on) and the packet planted recharging
+		if (gState.mTicks == 300 && aBoard)
+			aBoard->ShakeBoard(4, -6);
+		else if (gState.mTicks == 304 && aBoard)
+		{
+			Check(InLevelLayout(theApp) && (aBoard->mX != 0 || aBoard->mY != 0), "the board shaken: still in the phone layout");
+			if (!gState.mShotDir.empty())
+				aGL->mCapture.mRequested = true;
+		}
+		else if (gState.mTicks > 304 && gState.mTicks < 900 && aGL->mCapture.mDone)
+		{
+			SaveWindow(aGL->mCapture, gState.mLevels[gState.mLevel - 1].mName + " shake");
+			aGL->mCapture = GLInterface::FrameCapture{};
+		}
 		if (gState.mTicks == 900 && aBoard)
 		{
 			aBoard->mProgressMeterWidth = std::max(aBoard->mProgressMeterWidth, 60);
