@@ -206,8 +206,23 @@ std::vector<Tile> Compute(const Input& theInput)
 	double aSlots = aConveyor ? CONVEYOR_SLOTS : static_cast<double>(n);
 	double aPad = aConveyor ? CONVEYOR_PAD : 0;
 	double aCardScale = 0, aColumnRight = 0;
-	if (!CardColumn(theInput, aLawnX, aSlots, aPad, n > 0 || aConveyor, aCardScale, aColumnRight))
+	// (without a backdrop, the sun counter at the top of the column, as wide as the cards: a slot more)
+	bool aOwnPicture = theInput.mBackdrop.Empty();
+	double aColumnSun = aOwnPicture && !theInput.mSunCounter.Empty() ? 1 : 0;
+	if (!CardColumn(theInput, aLawnX, aSlots + aColumnSun, aPad, n > 0 || aConveyor, aCardScale, aColumnRight))
 		return {};
+	if (aOwnPicture)
+	{
+		// a picture of the level's own (the aquarium), which ends at the screen's edges: the screen right after the
+		// cards' board, so that the board is no wider than the cards, and a board on right of it
+		double aShift = aColumnRight + EDGE_MARGIN - aLawnX;
+		if (aShift < 0)
+		{
+			for (Tile& t : aTiles)
+				t.mDest.mX += aShift;
+			aLawnX += aShift;
+		}
+	}
 	// (just the cards' width, from the safe area's left edge, and on to where the backdrop's image begins if that is
 	// further; without that picture, on to the game's screen)
 	double aBoardRight = theInput.mBackdrop.Empty() ? aLawnX :
@@ -223,15 +238,21 @@ std::vector<Tile> Compute(const Input& theInput)
 
 	// Along the top, right of the cards (and of the board's rim): the sun counter, then the shovel, all as high as the sun
 	// counter
-	double aBarX = theInput.mBackdrop.Empty() ? aColumnRight + GAP : std::max(aColumnRight + GAP, aBoardRight + 1);
+	double aBarX = theInput.mBackdrop.Empty() ? aLawnX + GAP : std::max(aColumnRight + GAP, aBoardRight + 1);
 	double aBarY = aSafe.mY + EDGE_MARGIN;
 	double aBarHeight = SUN_COUNTER_HEIGHT * aCardScale;
 	Tile aSunCounter;
 	bool aHasSun = !theInput.mSunCounter.Empty();
 	if (aHasSun)
 	{
-		aSunCounter = Tile{ theInput.mSunCounter, Box{ aBarX, aBarY, SUN_COUNTER_WIDTH * aCardScale, aBarHeight }, Kind::SunCounter };
-		aBarX += aSunCounter.mDest.mWidth + GAP;
+		if (aColumnSun > 0)	// at the top of the cards' column, as wide as they are
+			aSunCounter = Tile{ theInput.mSunCounter, Box{ aSafe.mX + EDGE_MARGIN + aPad * aCardScale, aBarY, CARD_WIDTH * aCardScale,
+				SUN_COUNTER_HEIGHT * CARD_WIDTH / SUN_COUNTER_WIDTH * aCardScale }, Kind::SunCounter };
+		else
+		{
+			aSunCounter = Tile{ theInput.mSunCounter, Box{ aBarX, aBarY, SUN_COUNTER_WIDTH * aCardScale, aBarHeight }, Kind::SunCounter };
+			aBarX += aSunCounter.mDest.mWidth + GAP;
+		}
 	}
 	if (!theInput.mShovel.Empty())
 	{
@@ -277,7 +298,7 @@ std::vector<Tile> Compute(const Input& theInput)
 	// The cards, one column down the left edge of the safe area from its top; on a conveyor belt each where its packet
 	// is along the belt, over the belt, and only those on the window
 	double aCardX = aSafe.mX + EDGE_MARGIN + aPad * aCardScale;
-	double aTop = aSafe.mY + EDGE_MARGIN;
+	double aTop = aColumnSun > 0 && aHasSun ? aSunCounter.mDest.Bottom() + CARD_GAP : aSafe.mY + EDGE_MARGIN;
 	double aPitch = CARD_HEIGHT * aCardScale + CARD_GAP;
 	if (aConveyor)
 		aTiles.push_back(Tile{ theInput.mConveyorBelt, Box{ aSafe.mX + EDGE_MARGIN, aSafe.mY, (CARD_WIDTH + 2 * aPad) * aCardScale, theInput.mScreenHeight - aSafe.mY },

@@ -302,7 +302,12 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 		Check(std::abs(t.mDest.mWidth / t.mDest.mHeight - CARD_WIDTH / CARD_HEIGHT) < 1e-9, aWhich + " is a wide card");
 		if (i == 0)
 		{
-			Check(std::abs(t.mDest.mY - (aSafe.mY + EDGE_MARGIN)) < EPSILON, aWhich + " is at the top");
+			// (without a backdrop under the sun counter, which is at the top of the column)
+			const Tile* aColumnSun = nullptr;
+			for (const Tile& u : aTiles)
+				if (u.mKind == Kind::SunCounter && theInput.mBackdrop.Empty())
+					aColumnSun = &u;
+			Check(std::abs(t.mDest.mY - (aColumnSun ? aColumnSun->mDest.Bottom() + CARD_GAP : aSafe.mY + EDGE_MARGIN)) < EPSILON, aWhich + " is at the top");
 			aCardHeight = t.mDest.mHeight;
 			aCardWidth = t.mDest.mWidth;
 			aColumnRight = t.mDest.Right();
@@ -333,16 +338,26 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 		for (const Tile& t : aTiles)
 			if (t.mKind == Kind::Board && t.mIndex == 0 && !theInput.mBackdrop.Empty())
 				aBoardEdge = std::max(aBoardEdge, t.mDest.Right());
-		Check(aSun->mDest.mX > aBoardEdge && aSun->mDest.mX < aBoardEdge + 2 * GAP, theName + ": the sun counter is right beside the cards and their board");
+		if (theInput.mBackdrop.Empty())
+		{
+			// at the top of the cards' column, as wide as the cards
+			Check(std::abs(aSun->mDest.mX - (aSafe.mX + EDGE_MARGIN)) < EPSILON && std::abs(aSun->mDest.mWidth - aCardWidth) < EPSILON,
+				theName + ": the sun counter is at the top of the cards' column, as wide as they are");
+			aBarRight = aLawnOffsetX + theInput.mLawn.mX * aLawnScale;
+		}
+		else
+		{
+			Check(aSun->mDest.mX > aBoardEdge && aSun->mDest.mX < aBoardEdge + 2 * GAP, theName + ": the sun counter is right beside the cards and their board");
+			aBarRight = aSun->mDest.Right();
+		}
 		Check(std::abs(aSun->mDest.mY - (aSafe.mY + EDGE_MARGIN)) < EPSILON, theName + ": the sun counter is at the top");
 		Check(aSun->mDest.mWidth > aSun->mDest.mHeight * 2, theName + ": the sun counter is a wide bar");
-		aBarRight = aSun->mDest.Right();
 	}
 	if (!theInput.mShovel.Empty())
 	{
 		const Tile* aShovel = aFindKind(Kind::Shovel);
 		Check(aShovel != nullptr, theName + ": the shovel has a tile");
-		if (aShovel && aSun)
+		if (aShovel && aSun && !theInput.mBackdrop.Empty())
 		{
 			Check(aShovel->mDest.mX > aSun->mDest.Right() && aShovel->mDest.mX < aSun->mDest.Right() + 2 * GAP, theName + ": the shovel is beside the sun counter");
 			Check(Same(aShovel->mSource, theInput.mShovel), theName + ": the shovel's tile is of the shovel");
@@ -357,7 +372,8 @@ void CheckLayout(const std::string& theName, const Input& theInput)
 		Check(aMenu != nullptr, theName + ": the menu button has a tile");
 		if (aMenu)
 		{
-			Check(aMenu->mDest.Right() > aSafe.Right() - 6 && std::abs(aMenu->mDest.mY - aSafe.mY) < EPSILON, theName + ": the menu button is in the top right corner");
+			double aCorner = std::min(aSafe.Right(), aLawnOffsetX + theInput.mLawn.Right() * aLawnScale);	// (of the screen, when it is short of the safe area's)
+			Check(aMenu->mDest.Right() > aCorner - 6 && std::abs(aMenu->mDest.mY - aSafe.mY) < EPSILON, theName + ": the menu button is in the top right corner");
 			Check(aMenu->mDest.mHeight >= 36, theName + ": the menu button is at least 36 points high");
 			Check(aMenu->mDest.mX > aBarRight, theName + ": the menu button is right of the shovel");
 			Check(Same(aMenu->mSource, theInput.mMenuButton), theName + ": the menu button's tile is of the button");
